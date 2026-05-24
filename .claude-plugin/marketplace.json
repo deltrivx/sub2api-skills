@@ -1,0 +1,20 @@
+{
+  "name": "sub2api-skills",
+  "owner": {
+    "name": "DeltrivX",
+    "url": "https://sub2api.deltrivx.com"
+  },
+  "metadata": {
+    "description": "Skills for managing Sub2API resources — accounts, groups, tokens and balance.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "sub2api",
+      "description": "User-facing Sub2API operations: query accounts, check balance, list groups, and manage personal API tokens.",
+      "source": "./",
+      "strict": false,
+      "skills": ["./skills/sub2api"]
+    }
+  ]
+}

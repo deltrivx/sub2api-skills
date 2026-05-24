@@ -1,0 +1,12 @@
+{
+  "name": "sub2api",
+  "description": "Skills for managing Sub2API resources — accounts, groups, tokens and balance.",
+  "skills": [
+    {
+      "name": "sub2api",
+      "description": "User-facing Sub2API operations: query accounts, check balance, list groups, and manage personal API tokens.",
+      "source": "./skills/sub2api",
+      "strict": false
+    }
+  ]
+}
