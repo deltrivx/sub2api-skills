@@ -33,6 +33,11 @@ It aggregates multiple OpenAI accounts behind a unified API, and provides accoun
 | `balance` | Show account balance | `docs/actions-query.md` |
 | `tokens` | List API tokens | `docs/actions-token.md` |
 | `create-token` | Create a new API token | `docs/actions-token.md` |
+| `switch-group` | Change a token's group | `docs/actions-token.md` |
+| `copy-token` | Copy real key to clipboard (never shown) | `docs/actions-token.md` |
+| `apply-token` | Apply token key to a config file securely | `docs/actions-config.md` |
+| `exec-token` | Execute a command with the token key securely substituted | `docs/actions-exec.md` |
+| `scan-config` | Inspect config structure with best-effort secret redaction | `docs/actions-config.md` |
 | `help` | Answer questions about Sub2API | `docs/help.md` |
 
 ### `help` (or no arguments) — Show available actions
@@ -44,4 +49,9 @@ It aggregates multiple OpenAI accounts behind a unified API, and provides accoun
 | `balance` | `/sub2api balance` | Show account balance |
 | `tokens` | `/sub2api tokens` | List API tokens |
 | `create-token` | `/sub2api create-token <name>` | Create a new API token |
+| `switch-group` | `/sub2api switch-group <token_id> <group>` | Change a token's group |
+| `copy-token` | `/sub2api copy-token <token_id>` | Copy real key to clipboard (never shown) |
+| `apply-token` | `/sub2api apply-token <token_id> <file_path>` | Apply token key to a config file securely |
+| `exec-token` | `/sub2api exec-token <token_id> <command...>` | Execute a command with the token key securely substituted |
+| `scan-config` | `/sub2api scan-config <file_path>` | Inspect config structure with best-effort secret redaction |
 | `help` | `/sub2api help <question>` | Answer questions about Sub2API |

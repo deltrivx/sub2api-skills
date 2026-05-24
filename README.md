@@ -29,6 +29,11 @@ Alternatively, create a `.env` file in the project root or the skill directory. 
 | `balance` | `/sub2api balance` | Show account balance |
 | `tokens` | `/sub2api tokens` | List API tokens |
 | `create-token` | `/sub2api create-token <name>` | Create a new API token |
+| `switch-group` | `/sub2api switch-group <id> <group>` | Change a token's group |
+| `copy-token` | `/sub2api copy-token <id>` | Copy key to clipboard (never shown) |
+| `apply-token` | `/sub2api apply-token <id> <file>` | Inject key into config file |
+| `exec-token` | `/sub2api exec-token <id> -- <cmd>` | Execute command with key safely |
+| `scan-config` | `/sub2api scan-config <file>` | Inspect config safely |
 | `help` | `/sub2api help <question>` | Answer questions about Sub2API |
 
 ## Requirements
