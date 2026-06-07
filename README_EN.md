@@ -153,7 +153,8 @@ It does not use historical `scheduled_test_results` records for current availabi
 
 Announcement policy:
 
-- Cron mode creates announcements only when monitored account status changes.
+- Cron mode creates announcements only when monitored account status changes and scheduling/routing still needs automatic adjustment.
+- If the changed status already matches manually adjusted scheduling, the monitor updates state silently without creating announcements or Telegram pushes.
 - Telegram `/force` runs realtime verification and returns a report, but does not create announcements, does not write monitor state, and does not consume the next cron state transition.
 - Explicit manual announcement tests can be run with `--announce` or `--manual-test`.
 - Before creating a new popup announcement, existing active popup announcements are downgraded to `silent`, keeping history while ensuring the UI pops only the latest message.

@@ -32,7 +32,8 @@ Historical `scheduled_test_results` are not used for current state decisions.
 
 Modes:
 
-- Cron/default: write state and create announcements only on status changes.
+- Cron/default: write state and create announcements only when status changes still require automatic scheduling/routing adjustments.
+- If scheduling is already manually corrected for the detected status, update state silently and do not notify.
 - `/force` / `--force`: run realtime verification only; do not create announcements and do not update state.
 - `--announce` / `--manual-test`: run realtime verification and create a manual popup announcement.
 

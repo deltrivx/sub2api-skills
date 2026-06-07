@@ -229,6 +229,39 @@ def check_account_status(token: str, account: dict):
     return current_status, latest
 
 
+def related_schedule_actions(account_id: int, actions: list[dict]) -> list[dict]:
+    if account_id == 99:
+        names = {"South-Anthropic"}
+    elif account_id == 100:
+        names = {"South-OpenAI", "TokenRouter"}
+    else:
+        names = set()
+    return [action for action in actions if action.get("name") in names]
+
+
+def should_suppress_manual_resolved_announcement(account_id: int, actions: list[dict]) -> bool:
+    """Suppress status-change announcements when scheduling is already correct.
+
+    If realtime verification finds a state transition but every related
+    schedulable switch is already in the desired position, a user or another
+    automation has handled routing manually. Update monitor state silently and
+    avoid popup/Telegram noise.
+    """
+    scoped = related_schedule_actions(account_id, actions)
+    if not scoped:
+        return False
+    for action in scoped:
+        if action.get("before") is None:
+            return False
+        if action.get("changed"):
+            return False
+        if action.get("before") != action.get("desired"):
+            return False
+        if action.get("after") != action.get("desired"):
+            return False
+    return True
+
+
 def set_schedulable(account_id: int, enabled: bool):
     value = "true" if enabled else "false"
     psql("UPDATE accounts SET schedulable=" + value + ", updated_at=now() WHERE id=" + str(int(account_id)) + " AND deleted_at IS NULL;")
@@ -294,9 +327,10 @@ def save_state(state: dict):
 def main() -> int:
     token = login()
     state = load_state()
+    pending_reports = []
     reports = []
     statuses = {}
-    total_report = []
+    schedule_actions = []
 
     print("=== 账号状态监控 ===")
     print("时间:", time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -314,22 +348,40 @@ def main() -> int:
         if not FORCE or MANUAL_ANNOUNCE:
             state[str(account_id)] = {"status": current_status, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"), "latency_ms": latency}
         if MANUAL_ANNOUNCE or ((not FORCE) and previous is not None and previous != current_status):
-            reports.append((account, previous, current_status, latest))
+            pending_reports.append((account, previous, current_status, latest))
 
     # Example routing rule. Adjust account IDs for your own deployment.
+    def apply_desired(account_id: int, name: str, desired: bool):
+        current = current_schedulable(account_id)
+        if current is not None and current != desired:
+            set_schedulable(account_id, desired)
+            schedule_actions.append({"account_id": account_id, "name": name, "before": current, "desired": desired, "after": desired, "changed": True})
+        else:
+            schedule_actions.append({"account_id": account_id, "name": name, "before": current, "desired": desired, "after": current, "changed": False})
+
     if 100 in statuses:
         openai_ok = statuses[100] == "available"
-        if current_schedulable(100) != openai_ok:
-            set_schedulable(100, openai_ok)
-            total_report.append("- South-OpenAI: " + ("开启" if openai_ok else "关闭"))
-        if current_schedulable(TOKEN_ROUTER_ACCOUNT_ID) == openai_ok:
-            set_schedulable(TOKEN_ROUTER_ACCOUNT_ID, not openai_ok)
-            total_report.append("- TokenRouter: " + ("开启" if not openai_ok else "关闭"))
+        apply_desired(100, "South-OpenAI", openai_ok)
+        apply_desired(TOKEN_ROUTER_ACCOUNT_ID, "TokenRouter", not openai_ok)
     if 99 in statuses:
-        anth_ok = statuses[99] == "available"
-        if current_schedulable(99) != anth_ok:
-            set_schedulable(99, anth_ok)
-            total_report.append("- South-Anthropic: " + ("开启" if anth_ok else "关闭"))
+        apply_desired(99, "South-Anthropic", statuses[99] == "available")
+
+    total_report = []
+    for action in schedule_actions:
+        if action.get("before") is None:
+            total_report.append("- " + action["name"] + ": 未读取到调度状态")
+        elif action.get("changed"):
+            total_report.append("- " + action["name"] + ": " + ("开启" if action["before"] else "关闭") + " -> " + ("开启" if action["after"] else "关闭"))
+        else:
+            total_report.append("- " + action["name"] + ": 已是" + ("开启" if action["after"] else "关闭") + "，无需操作")
+
+    for item in pending_reports:
+        account = item[0]
+        account_id = int(account["id"])
+        if (not MANUAL_ANNOUNCE) and should_suppress_manual_resolved_announcement(account_id, schedule_actions):
+            print("  " + account["name"] + ": status changed but related scheduling is already desired; silent state update.")
+            continue
+        reports.append(item)
 
     for account, previous, current_status, latest in reports:
         title = ("✅" if current_status == "available" else "⚠️") + " [Sub2API] " + account["name"] + " 当前" + STATUS_TEXT.get(current_status, current_status)

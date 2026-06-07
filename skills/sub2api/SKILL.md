@@ -60,7 +60,8 @@ Template capabilities include:
 
 Announcement behavior:
 
-- Default cron mode announces only status changes.
+- Default cron mode announces only status changes that still require automatic scheduling/routing adjustment.
+- If scheduling is already manually corrected, the monitor updates state silently with no announcement or Telegram push.
 - `/force` is detection-only: no announcement and no state update.
 - `--announce` / `--manual-test` explicitly creates a manual announcement.
 - Older popup announcements are downgraded to `silent` before creating a new popup, so only the latest popup is shown while history remains available.
