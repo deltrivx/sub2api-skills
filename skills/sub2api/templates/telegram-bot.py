@@ -4,6 +4,7 @@
 Features:
 - Telegram command menu in Chinese.
 - Read-only diagnostics for Sub2API accounts, groups, tokens, usage, errors and logs.
+- `/force` realtime verification that does not publish announcements or consume monitor state.
 - JSON/TXT account-file import with automatic group matching/creation.
 - Confirmation-code guarded control commands.
 - No hard-coded secrets: configure through environment variables.
@@ -43,6 +44,7 @@ COMMANDS = {
     "usage": "查看今日用量统计",
     "errors": "查看最近错误聚合",
     "logs": "查看关键日志摘要",
+    "force": "手动触发实时检测（不发公告）",
     "importhelp": "查看账号文件导入说明",
     "backup": "生成本地配置备份",
     "mute": "临时静默通知：/mute 2h",
@@ -193,6 +195,14 @@ def cmd_logs(_text=""):
         r = run("tail -n 30 " + shlex.quote(path) + " 2>/dev/null || true", timeout=8)
         sections.append(path + "：\n" + (r.stdout.strip() or "无"))
     return "\n\n".join(sections)
+
+
+def cmd_force(_text=""):
+    proc = run("/usr/bin/python3 /opt/sub2api-monitor.py --force", timeout=150)
+    output = (proc.stdout + proc.stderr).strip()
+    if proc.returncode != 0:
+        return "实时检测失败：\n" + output[-2500:]
+    return "已手动触发实时检测。不会发布公告，也不会写入巡检状态。\n" + output[-3000:]
 
 
 def cmd_backup(_text=""):
@@ -425,6 +435,7 @@ HANDLERS = {
     "usage": cmd_usage,
     "errors": cmd_errors,
     "logs": cmd_logs,
+    "force": cmd_force,
     "backup": cmd_backup,
     "mute": cmd_mute,
     "watch": cmd_watch,

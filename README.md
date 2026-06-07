@@ -55,6 +55,7 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/summary`：查看 Sub2API 运行摘要
 - `/overview`：查看综合仪表盘
 - `/health`：检查服务健康状态
+- `/force`：手动触发实时检测，不发公告、不写巡检状态
 - `/plans`：查看定时测试计划
 - `/history`：查看测试历史
 - `/announcements`：查看公告
@@ -78,6 +79,7 @@ export SUB2API_USER_ID="<your-user-id>"
 ### 导入与维护
 
 - `/importhelp`：查看账号文件导入说明
+- `/force`：手动实时检测 South/监控账号状态，不创建公告，也不消费下一次巡检状态变化
 - 发送 `.json` / `.txt` 账号文件：自动分析、创建/匹配分组、导入账号并报告账号信息
 - `/backup`：生成本地配置备份
 - `/mute 30m|2h|1d`：临时静默 Telegram 推送
@@ -154,7 +156,24 @@ sudo systemctl enable --now sub2api-telegram-bot.service
 sudo systemctl status sub2api-telegram-bot.service --no-pager
 ```
 
-## 七、免责声明
+## 七、巡检与公告逻辑
+
+监控模板每次运行都会通过 Sub2API 后台实时账号测试接口重新验证账号状态：
+
+```text
+POST /api/v1/admin/accounts/{id}/test
+```
+
+因此状态报告不依赖旧的 `scheduled_test_results` 历史记录。历史记录只适合做审计或人工排查，不作为当前可用性判断来源。
+
+公告策略：
+
+- 定时巡检：只有发现账号状态变化时才创建公告。
+- Telegram `/force`：只做实时检测并返回报告，不创建公告、不写状态文件、不消费下一次巡检状态变化。
+- 显式手动公告测试：运行监控脚本时使用 `--announce` 或 `--manual-test`。
+- 新 popup 公告创建前，会将旧的 active popup 公告降级为 `silent`，旧公告保留在公告历史中，但界面只弹最新一条。
+
+## 八、免责声明
 
 本项目是面向 Sub2API 的独立社区集成与运维模板，并非 Sub2API 官方组件，除非后续被 Sub2API 官方维护者明确接纳或合并。
 
@@ -172,7 +191,7 @@ sudo systemctl status sub2api-telegram-bot.service --no-pager
 
 所有第三方名称和商标均归其各自所有者所有。本文档中提到 Sub2API、OpenAI、Anthropic、Gemini、Telegram、GitHub 等，仅用于兼容性说明和使用文档。
 
-## 八、安全原则
+## 九、安全原则
 
 - 不提交真实 Token、密码、JWT、API Key、Chat ID、数据库地址或内网地址
 - 所有敏感配置通过环境变量或本地 secrets 文件传入
@@ -181,11 +200,11 @@ sudo systemctl status sub2api-telegram-bot.service --no-pager
 - 导入账号默认关闭调度
 - 日志和回复默认脱敏
 
-## 九、英文备用 README
+## 十、英文备用 README
 
 英文版备用文档见：[`README_EN.md`](README_EN.md)
 
-## 十、CI
+## 十一、CI
 
 仓库包含 GitHub Actions：
 

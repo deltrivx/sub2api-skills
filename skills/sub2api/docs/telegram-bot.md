@@ -5,7 +5,7 @@
 ## Files
 
 - `telegram-bot.py` — Telegram polling bot with Chinese command menu.
-- `south-monitor.py` — optional scheduled monitor that reads Sub2API scheduled-test results.
+- `south-monitor.py` — optional realtime monitor. It calls Sub2API's admin account test endpoint on every run instead of relying on historical scheduled-test records.
 - `sub2api-telegram-bot.service` — systemd unit.
 - `sub2api-bot.env.example` — environment configuration example.
 
@@ -19,6 +19,27 @@ Do not commit real values. Replace placeholders at deployment time:
 - `<telegram-bot-token>`
 - `<telegram-chat-id>`
 - `<proxy-host>` / `<proxy-port>`
+
+## Realtime Verification
+
+The monitor template uses realtime account tests for every report:
+
+```text
+POST /api/v1/admin/accounts/{id}/test
+```
+
+Historical `scheduled_test_results` are not used for current state decisions.
+
+Modes:
+
+- Cron/default: write state and create announcements only on status changes.
+- `/force` / `--force`: run realtime verification only; do not create announcements and do not update state.
+- `--announce` / `--manual-test`: run realtime verification and create a manual popup announcement.
+
+Popup behavior:
+
+- Before a new popup announcement is created, previous active popup announcements are changed to `silent`.
+- Old announcements remain in history, but the UI should only pop the latest one.
 
 ## Account Import
 
