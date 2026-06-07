@@ -1,10 +1,10 @@
 {
   "name": "sub2api",
-  "description": "Skills for managing Sub2API resources — accounts, groups, tokens and balance.",
+  "description": "Skills and templates for managing Sub2API resources — accounts, groups, tokens, balance, diagnostics, and Telegram operations bot deployment.",
   "skills": [
     {
       "name": "sub2api",
-      "description": "User-facing Sub2API operations: query accounts, check balance, list groups, and manage personal API tokens.",
+      "description": "User-facing Sub2API operations: query accounts, check balance, list groups, manage personal API tokens, and reference the optional Telegram operations bot template.",
       "source": "./skills/sub2api",
       "strict": false
     }

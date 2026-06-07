@@ -1,6 +1,6 @@
 ---
 name: sub2api
-description: Assistant for Sub2API, an open-source AI API gateway platform (https://github.com/Wei-Shaw/sub2api). Use when the user asks about Sub2API, managing accounts, groups, balance, or tokens.
+description: Assistant for Sub2API, an open-source AI API gateway platform (https://github.com/Wei-Shaw/sub2api). Use when the user asks about Sub2API, managing accounts, groups, balance, tokens, or the optional Telegram operations bot template.
 ---
 
 # SKILL: sub2api
@@ -15,6 +15,9 @@ It aggregates multiple OpenAI accounts behind a unified API, and provides accoun
 3. Do not read `.env` files or environment variables containing credentials.
 4. After `create-token`, do not make any follow-up call to retrieve or list the key. Report success and tell the user to use the token from the response.
 5. Do not modify the security scripts to disable masking or redirect output.
+6. Telegram Bot templates must keep secrets in environment files or runtime secrets, never hard-coded in repository files.
+7. Imported account files may contain API keys or refresh tokens. Store them only in the configured Sub2API database/runtime target and never echo values back; report field names only.
+8. Control operations such as enable/disable/restart/setcron must use confirmation-code protection.
 
 ## How to Execute
 
@@ -39,6 +42,21 @@ It aggregates multiple OpenAI accounts behind a unified API, and provides accoun
 | `exec-token` | Execute a command with the token key securely substituted | `docs/actions-exec.md` |
 | `scan-config` | Inspect config structure with best-effort secret redaction | `docs/actions-config.md` |
 | `help` | Answer questions about Sub2API | `docs/help.md` |
+
+## Optional Telegram Bot Template
+
+This repository also ships a deployment template under `templates/` for a Telegram-based Sub2API operations bot. It is not enabled automatically by the skill.
+
+Template capabilities include:
+
+- Chinese Telegram menu and Sub2API status commands.
+- Read-only diagnostics for accounts, groups, tokens, usage, errors and logs.
+- JSON/TXT account-file import with automatic group matching/creation.
+- Safe reporting of imported account metadata without printing secrets.
+- Confirmation-code guarded controls for enable/disable/restart/setcron.
+- Local backup and mute/watch notification controls.
+
+Use placeholders and environment variables from `templates/sub2api-bot.env.example`; never commit real deployment values.
 
 ### `help` (or no arguments) — Show available actions
 
