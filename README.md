@@ -154,7 +154,25 @@ sudo systemctl enable --now sub2api-telegram-bot.service
 sudo systemctl status sub2api-telegram-bot.service --no-pager
 ```
 
-## 七、安全原则
+## 七、免责声明
+
+本项目是面向 Sub2API 的独立社区集成与运维模板，并非 Sub2API 官方组件，除非后续被 Sub2API 官方维护者明确接纳或合并。
+
+请自行评估风险后使用。生产环境部署前，请先阅读源码，在非生产环境测试，并确认 SQL 查询、表名、服务名、文件路径、权限模型、调度规则和告警策略符合你的实际部署。
+
+本项目不提供法律、财务、合规、安全或运维层面的保证。使用者需要自行负责：
+
+- 妥善保护 API Key、Refresh Token、Telegram Token、数据库凭据和管理密码；
+- 遵守上游服务商条款、本地法律法规和平台规则；
+- 确认账号共享、额度分发、API 转发、计费统计、自动化导入和运维操作均已获得授权；
+- 限制 Telegram Bot 可访问的 Chat ID，并保护环境变量文件和备份文件；
+- 对 `/enable`、`/disable`、`/restart`、`/setcron`、账号导入和备份等管理动作的结果负责。
+
+模板中的控制命令已设计为确认码保护，但这不能替代完善的权限隔离、日志审计、备份保护和生产变更流程。任何因部署、配置、误操作、凭据泄露、上游封禁、计费异常或第三方服务变化造成的损失，由使用者自行承担。
+
+所有第三方名称和商标均归其各自所有者所有。本文档中提到 Sub2API、OpenAI、Anthropic、Gemini、Telegram、GitHub 等，仅用于兼容性说明和使用文档。
+
+## 八、安全原则
 
 - 不提交真实 Token、密码、JWT、API Key、Chat ID、数据库地址或内网地址
 - 所有敏感配置通过环境变量或本地 secrets 文件传入
@@ -163,7 +181,11 @@ sudo systemctl status sub2api-telegram-bot.service --no-pager
 - 导入账号默认关闭调度
 - 日志和回复默认脱敏
 
-## 八、CI
+## 九、英文备用 README
+
+英文版备用文档见：[`README_EN.md`](README_EN.md)
+
+## 十、CI
 
 仓库包含 GitHub Actions：
 
