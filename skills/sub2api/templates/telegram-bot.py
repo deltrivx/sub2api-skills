@@ -23,9 +23,9 @@ COMMANDS = {
     "/confirm": "确认执行控制操作",
     "/cancel": "取消待确认操作",
     "/backup": "生成本地配置备份",
-    "/restart": "重启服务：/restart bot|sub2api",
+    "/restart": "重启：/restart bot|sub2api",
     "/debug": "健康检查与日志摘要",
-    "/update": "检查更新；有新版本时弹出确认/取消按钮",
+    "/update": "检查更新",
 }
 
 def log(*args):

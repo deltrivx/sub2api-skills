@@ -68,8 +68,8 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/pending`：查看待确认操作
 - `/confirm <code>`：确认执行
 - `/cancel`：取消待确认操作
-- `/restart bot|sub2api`：重启服务，生成 5 分钟有效确认码
-- `/update`：检查更新；无更新时回复“已是最新版”，有更新时弹出确认/取消按钮，也可用 `/confirm <code>` / `/cancel` 兜底
+- `/restart bot|sub2api`：重启服务
+- `/update`：检查更新，有更新再确认
 
 ## 五、账号 JSON 导入格式
 
