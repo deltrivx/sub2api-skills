@@ -844,6 +844,7 @@ def main():
                     continue
                 reply = None
                 if msg.get("document"):
+                    send_message(chat_id, "收到文件，开始解压并导入~")
                     reply = handle_document_message(msg)
                 elif text.startswith("/"):
                     reply = handle_command(text, chat_id)
