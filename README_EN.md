@@ -61,13 +61,13 @@ Supported bot command groups:
 
 ### Confirmation-protected Controls
 
-These commands generate a 5-minute confirmation code before execution:
+These commands ask for confirmation before execution:
 
 - `/pending`
 - `/confirm <code>`
 - `/cancel`
-- `/restart bot|sub2api`
-- `/update`
+- `/restart bot|sub2api` — generates a 5-minute confirmation code
+- `/update` — checks for updates first; replies “already up to date” when current, otherwise shows confirm/cancel buttons, with `/confirm <code>` / `/cancel` as fallback controls
 
 ## 5. Account JSON Import Format
 
