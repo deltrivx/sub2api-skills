@@ -4,7 +4,6 @@
 Features:
 - Telegram command menu in Chinese.
 - Read-only diagnostics for Sub2API accounts, groups, tokens, usage, errors and logs.
-- `/force` realtime verification that does not publish announcements or consume monitor state.
 - JSON/TXT account-file import with automatic group matching/creation.
 - Confirmation-code guarded control commands.
 - No hard-coded secrets: configure through environment variables.
@@ -29,8 +28,6 @@ OFFSET_FILE = os.environ.get("SUB2API_BOT_OFFSET_FILE", "/tmp/sub2api_bot_offset
 MUTE_FILE = os.environ.get("SUB2API_BOT_MUTE_FILE", "/tmp/sub2api_bot_mute_until.txt")
 IMPORT_DIR = os.environ.get("SUB2API_BOT_IMPORT_DIR", "/tmp/sub2api_bot_imports")
 PENDING_FILE = os.environ.get("SUB2API_BOT_PENDING_FILE", "/tmp/sub2api_bot_pending_action.json")
-MONITOR_STATE_FILE = os.environ.get("SUB2API_MONITOR_STATE_FILE", "/tmp/sub2api_monitor_state.json")
-MONITOR_LOG = os.environ.get("SUB2API_MONITOR_LOG", "/tmp/sub2api_monitor.log")
 BOT_LOG = os.environ.get("SUB2API_BOT_LOG", "/tmp/sub2api_telegram_bot.log")
 
 COMMANDS = {
@@ -44,7 +41,6 @@ COMMANDS = {
     "usage": "查看今日用量统计",
     "errors": "查看最近错误聚合",
     "logs": "查看关键日志摘要",
-    "force": "手动触发实时检测（不发公告）",
     "importhelp": "查看账号文件导入说明",
     "backup": "生成本地配置备份",
     "mute": "临时静默通知：/mute 2h",
@@ -55,7 +51,6 @@ COMMANDS = {
     "enable": "启用账号调度：/enable 100",
     "disable": "禁用账号调度：/disable 100",
     "restart": "重启服务：/restart bot|sub2api",
-    "setcron": "修改监控频率：/setcron 30m",
     "help": "查看帮助",
 }
 
@@ -191,24 +186,16 @@ def cmd_errors(_text=""):
 
 def cmd_logs(_text=""):
     sections = []
-    for path in (MONITOR_LOG, BOT_LOG):
+    for path in (BOT_LOG,):
         r = run("tail -n 30 " + shlex.quote(path) + " 2>/dev/null || true", timeout=8)
         sections.append(path + "：\n" + (r.stdout.strip() or "无"))
     return "\n\n".join(sections)
 
 
-def cmd_force(_text=""):
-    proc = run("/usr/bin/python3 /opt/sub2api-monitor.py --force", timeout=150)
-    output = (proc.stdout + proc.stderr).strip()
-    if proc.returncode != 0:
-        return "实时检测失败：\n" + output[-2500:]
-    return "已手动触发实时检测。不会发布公告，也不会写入巡检状态。\n" + output[-3000:]
-
-
 def cmd_backup(_text=""):
     ts = time.strftime("%Y%m%d-%H%M%S")
     dest = f"/root/sub2api_bot_backup_{ts}.tgz"
-    run("tar --ignore-failed-read -czf " + shlex.quote(dest) + " /etc/sub2api-bot.env /opt/sub2api-telegram-bot.py /etc/systemd/system/sub2api-telegram-bot.service 2>/dev/null || true", timeout=30)
+    run("tar --ignore-failed-read -czf " + shlex.quote(dest) + " /etc/sub2api-bot.env /opt/sub2api-telegram-bot.py 2>/dev/null || true", timeout=30)
     return "本地备份已生成：" + dest if pathlib.Path(dest).exists() else "备份失败。"
 
 
@@ -412,15 +399,6 @@ def cmd_restart(text=""):
     return "用法：/restart bot 或 /restart sub2api"
 
 
-def cmd_setcron(text=""):
-    value = (text.split()[1].lower() if len(text.split()) > 1 else "")
-    mapping = {"15m": "*/15 * * * *", "30m": "0,30 * * * *", "1h": "0 * * * *"}
-    if value not in mapping:
-        return "用法：/setcron 15m|30m|1h"
-    line = mapping[value] + " /usr/bin/python3 /opt/sub2api-monitor.py >> " + MONITOR_LOG + " 2>&1"
-    cmd = "(crontab -l 2>/dev/null | grep -v '/opt/sub2api-monitor.py'; echo " + shlex.quote(line) + ") | crontab -"
-    return make_confirm("修改监控频率为 " + value, cmd)
-
 
 HANDLERS = {
     "help": cmd_help,
@@ -435,7 +413,6 @@ HANDLERS = {
     "usage": cmd_usage,
     "errors": cmd_errors,
     "logs": cmd_logs,
-    "force": cmd_force,
     "backup": cmd_backup,
     "mute": cmd_mute,
     "watch": cmd_watch,
@@ -446,7 +423,6 @@ HANDLERS = {
     "enable": cmd_enable,
     "disable": cmd_disable,
     "restart": cmd_restart,
-    "setcron": cmd_setcron,
 }
 
 

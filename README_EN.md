@@ -41,8 +41,6 @@ export SUB2API_USER_ID="<your-user-id>"
 Template files:
 
 - `skills/sub2api/templates/telegram-bot.py`
-- `skills/sub2api/templates/south-monitor.py`
-- `skills/sub2api/templates/sub2api-telegram-bot.service`
 - `skills/sub2api/templates/sub2api-bot.env.example`
 
 Supported bot command groups:
@@ -53,7 +51,6 @@ Supported bot command groups:
 - `/summary` — runtime summary
 - `/overview` — combined dashboard
 - `/health` — service health checks
-- `/force` — realtime verification without announcements or state updates
 - `/plans` — scheduled test plans
 - `/history` — recent test history
 - `/announcements` — announcements
@@ -77,7 +74,7 @@ Supported bot command groups:
 ### Import and Maintenance
 
 - `/importhelp` — account-file import help
-- `/force` — realtime verification of monitored accounts without creating announcements or consuming monitor state
+
 - Send a `.json` or `.txt` account file — analyze, import accounts, match/create groups, and return masked account metadata
 - `/backup` — create a local configuration backup
 - `/mute 30m|2h|1d` — temporarily mute Telegram pushes
@@ -135,31 +132,13 @@ Import behavior:
 ```bash
 sudo install -m 700 skills/sub2api/templates/telegram-bot.py /opt/sub2api-telegram-bot.py
 sudo install -m 600 skills/sub2api/templates/sub2api-bot.env.example /etc/sub2api-bot.env
-sudo install -m 644 skills/sub2api/templates/sub2api-telegram-bot.service /etc/systemd/system/sub2api-telegram-bot.service
 sudo editor /etc/sub2api-bot.env
 sudo systemctl daemon-reload
-sudo systemctl enable --now sub2api-telegram-bot.service
+
 ```
 
-## 7. Monitor and Announcement Logic
 
-The monitor template verifies account status in realtime on every run by calling Sub2API's admin account test endpoint:
-
-```text
-POST /api/v1/admin/accounts/{id}/test
-```
-
-It does not use historical `scheduled_test_results` records for current availability decisions. Historical records are useful for auditing, but not for live routing decisions.
-
-Announcement policy:
-
-- Cron mode creates announcements only when monitored account status changes and scheduling/routing still needs automatic adjustment.
-- If the changed status already matches manually adjusted scheduling, the monitor updates state silently without creating announcements or Telegram pushes.
-- Telegram `/force` runs realtime verification and returns a report, but does not create announcements, does not write monitor state, and does not consume the next cron state transition.
-- Explicit manual announcement tests can be run with `--announce` or `--manual-test`.
-- Before creating a new popup announcement, existing active popup announcements are downgraded to `silent`, keeping history while ensuring the UI pops only the latest message.
-
-## 8. Disclaimer
+## 7. Disclaimer
 
 This project is an independent community integration for Sub2API. It is not an official Sub2API component unless explicitly adopted by the Sub2API maintainers.
 
@@ -171,7 +150,7 @@ The templates may perform administrative actions such as toggling account schedu
 
 All third-party names and trademarks belong to their respective owners. References to Sub2API, OpenAI, Anthropic, Gemini, Telegram, GitHub, or other services are for interoperability and documentation purposes only.
 
-## 9. CI
+## 8. CI
 
 GitHub Actions validates:
 

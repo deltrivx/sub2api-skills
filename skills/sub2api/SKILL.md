@@ -51,20 +51,12 @@ Template capabilities include:
 
 - Chinese Telegram menu and Sub2API status commands.
 - Read-only diagnostics for accounts, groups, tokens, usage, errors and logs.
-- `/force` realtime verification that does not create announcements or write monitor state.
 - JSON/TXT account-file import with automatic group matching/creation.
 - Safe reporting of imported account metadata without printing secrets.
 - Confirmation-code guarded controls for enable/disable/restart/setcron.
 - Local backup and mute/watch notification controls.
-- Realtime monitor reports based on `POST /api/v1/admin/accounts/{id}/test`, not stale scheduled-test history.
 
-Announcement behavior:
 
-- Default cron mode announces only status changes that still require automatic scheduling/routing adjustment.
-- If scheduling is already manually corrected, the monitor updates state silently with no announcement or Telegram push.
-- `/force` is detection-only: no announcement and no state update.
-- `--announce` / `--manual-test` explicitly creates a manual announcement.
-- Older popup announcements are downgraded to `silent` before creating a new popup, so only the latest popup is shown while history remains available.
 
 Use placeholders and environment variables from `templates/sub2api-bot.env.example`; never commit real deployment values.
 
