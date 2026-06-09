@@ -58,7 +58,6 @@ Supported bot command groups:
 - `/importhelp` — account-file import help
 - Send a `.json` or `.txt` account file — analyze, import accounts, match/create groups, and return masked account metadata
 - `/backup` — create a local backup
-- `/updatecheck` — check whether Sub2API has a newer version
 
 ### Confirmation-protected Controls
 

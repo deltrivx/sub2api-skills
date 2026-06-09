@@ -25,8 +25,7 @@ COMMANDS = {
     "/backup": "生成本地配置备份",
     "/restart": "重启服务：/restart bot|sub2api",
     "/debug": "健康检查与日志摘要",
-    "/updatecheck": "检测 Sub2API 新版本",
-    "/update": "更新 Sub2API 到最新版（需确认）",
+    "/update": "检查更新；有新版本时弹出确认/取消按钮",
 }
 
 def log(*args):
@@ -52,10 +51,19 @@ def tg_call(method, payload=None, timeout=30):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
-def send_message(chat_id, text):
+def send_message(chat_id, text, reply_markup=None):
     if len(text) > 3900:
         text = text[:3900] + "\n..."
-    return tg_call("sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return tg_call("sendMessage", payload)
+
+def answer_callback_query(callback_query_id, text=""):
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    return tg_call("answerCallbackQuery", payload)
 
 def message_text_with_urls(msg):
     text = msg.get("text") or msg.get("caption") or ""
@@ -435,7 +443,7 @@ def cmd_restart(text):
 
 
 def cmd_importhelp():
-    return "账号文件导入说明：\n- 直接给机器人发送 .json/.txt 文件。\n- 支持单个对象、数组，或 accounts/items/data/list 包裹数组。\n- 会自动识别 openai/anthropic/gemini，Codex/ChatGPT OAuth 会按 OpenAI OAuth 导入。\n- 会优先复用已有同平台分组，例如 OpenAI/Anthropic/Google。\n- 敏感字段不会在回复中明文显示；导入默认 schedulable=false，确认后用 /enable 账号ID 开启调度。"
+    return "账号文件导入说明：\n- 直接给机器人发送 .json/.txt 文件。\n- 支持单个对象、数组，或 accounts/items/data/list 包裹数组。\n- 会自动识别 openai/anthropic/gemini，Codex/ChatGPT OAuth 会按 OpenAI OAuth 导入。\n- 会优先复用已有同平台分组，例如 OpenAI/Anthropic/Google。\n- 敏感字段不会在回复中明文显示；导入默认 schedulable=false，后续可按部署策略启用调度。"
 
 def detect_import_platform(item):
     candidates=[]
@@ -602,27 +610,31 @@ def handle_document_message(msg):
     if skipped:
         lines.append("失败/跳过：")
         lines.extend(["- "+x for x in skipped[:10]])
-    lines.append("安全提示：导入账号默认调度关闭；只有测试可用后才建议 /enable 账号ID 开启。")
+    lines.append("安全提示：导入账号默认调度关闭；只有测试可用后才建议按部署策略开启调度。")
     return "\n".join(lines)
 
 
-def cmd_updatecheck():
+def update_script():
+    return os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py")
 
-    r = run(os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py") + " check", timeout=120)
+def cmd_update(chat_id=None):
+    script = update_script()
+    r = run(script + " check", timeout=120)
     out = (r.stdout + r.stderr).strip()
     if r.returncode != 0:
         return "检测更新失败：\n" + out[-2000:]
-    return "Sub2API 更新检测：\n" + out + "\n\n如需更新，发送 /update 后按提示确认。"
-
-
-def cmd_update():
-    r = run(os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py") + " check", timeout=120)
-    out = (r.stdout + r.stderr).strip()
-    if r.returncode != 0:
-        return "检测更新失败，未创建更新任务：\n" + out[-2000:]
-    if "状态：已是最新" in out:
-        return "Sub2API 已是最新。\n" + out
-    return make_confirm("update", "更新 Sub2API 到最新版。\n" + out, os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py") + " apply")
+    if "状态：已是最新" in out or "已是最新" in out or "already up" in out.lower() or "up to date" in out.lower():
+        return "已是最新版。\n" + out
+    reply = make_confirm("update", "更新 Sub2API 到最新版。\n" + out, script + " apply")
+    data = pending_load() or {}
+    code = data.get("code", "")
+    if chat_id and code:
+        send_message(chat_id, reply, {"inline_keyboard": [[
+            {"text": "确认更新", "callback_data": "confirm:" + code},
+            {"text": "取消", "callback_data": "cancel:" + code}
+        ]]})
+        return None
+    return reply
 
 
 
@@ -643,8 +655,7 @@ def handle_command(text, chat_id="0"):
         if cmd == "/backup": return cmd_backup()
         if cmd == "/restart": return cmd_restart(text)
         if cmd == "/debug": return cmd_debug()
-        if cmd == "/updatecheck": return cmd_updatecheck()
-        if cmd == "/update": return cmd_update()
+        if cmd == "/update": return cmd_update(chat_id)
         return "未知命令。\n\n" + cmd_help()
     except Exception as e:
         return "执行失败：" + type(e).__name__ + ": " + str(e)[:300]
@@ -691,13 +702,32 @@ def main():
     log("started")
     while True:
         try:
-            payload = {"timeout": 25, "allowed_updates": ["message"]}
+            payload = {"timeout": 25, "allowed_updates": ["message", "callback_query"]}
             offset = get_offset()
             if offset is not None:
                 payload["offset"] = offset
             res = tg_call("getUpdates", payload, timeout=35)
             for upd in res.get("result", []):
                 set_offset(upd["update_id"] + 1)
+                cb = upd.get("callback_query") or {}
+                if cb:
+                    cb_id = cb.get("id")
+                    data = cb.get("data") or ""
+                    msg = cb.get("message") or {}
+                    chat_id = str(((msg.get("chat") or {}).get("id")))
+                    if chat_id not in ALLOWED_CHAT_IDS:
+                        log("ignore unauthorized callback", chat_id)
+                        continue
+                    if data.startswith("confirm:"):
+                        code = data.split(":", 1)[1]
+                        answer_callback_query(cb_id, "开始更新")
+                        send_message(chat_id, cmd_confirm("/confirm " + code))
+                    elif data.startswith("cancel:"):
+                        answer_callback_query(cb_id, "已取消")
+                        send_message(chat_id, cmd_cancel())
+                    else:
+                        answer_callback_query(cb_id, "未知操作")
+                    continue
                 msg = upd.get("message") or {}
                 chat = msg.get("chat") or {}
                 chat_id = str(chat.get("id"))

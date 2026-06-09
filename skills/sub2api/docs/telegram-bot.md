@@ -35,8 +35,7 @@ Do not commit real values. Replace placeholders at deployment time through envir
 - `/backup` — create a local backup.
 - `/restart bot|sub2api` — restart a service after confirmation.
 - `/debug` — health checks and log summary.
-- `/updatecheck` — check whether Sub2API has a newer version.
-- `/update` — update Sub2API after confirmation.
+- `/update` — check for updates; reply “already up to date” when current, otherwise show confirm/cancel buttons.
 
 ## Account Import
 

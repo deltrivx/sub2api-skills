@@ -60,7 +60,6 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/importhelp`：查看账号文件导入说明
 - 发送 `.json` / `.txt` 账号文件：自动分析、创建/匹配分组、导入账号并报告账号信息
 - `/backup`：生成本地配置备份
-- `/updatecheck`：检测 Sub2API 新版本
 
 ### 带确认码的控制命令
 
@@ -70,7 +69,7 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/confirm <code>`：确认执行
 - `/cancel`：取消待确认操作
 - `/restart bot|sub2api`：重启服务
-- `/update`：更新 Sub2API 到最新版
+- `/update`：检查更新；无更新时回复“已是最新版”，有更新时弹出确认/取消按钮
 
 ## 五、账号 JSON 导入格式
 
@@ -104,7 +103,7 @@ export SUB2API_USER_ID="<your-user-id>"
 - 自动创建或匹配分组
 - 自动写入 `accounts` 与 `account_groups`
 - 自动写入 `scheduler_outbox`
-- 默认 `schedulable=false`，确认无误后再 `/enable <account_id>`
+- 默认 `schedulable=false`，确认无误后再按部署策略开启调度
 - 回复中只展示凭据字段名，不展示明文凭据
 
 ## 六、部署 Telegram Bot
@@ -142,7 +141,7 @@ sudo systemctl daemon-reload
 - 遵守上游服务商条款、本地法律法规和平台规则；
 - 确认账号共享、额度分发、API 转发、计费统计、自动化导入和运维操作均已获得授权；
 - 限制 Telegram Bot 可访问的 Chat ID，并保护环境变量文件和备份文件；
-- 对 `/enable`、`/disable`、`/restart`、`/setcron`、账号导入和备份等管理动作的结果负责。
+- 对 `/restart`、`/update`、账号导入和备份等管理动作的结果负责。
 
 模板中的控制命令已设计为确认码保护，但这不能替代完善的权限隔离、日志审计、备份保护和生产变更流程。任何因部署、配置、误操作、凭据泄露、上游封禁、计费异常或第三方服务变化造成的损失，由使用者自行承担。
 

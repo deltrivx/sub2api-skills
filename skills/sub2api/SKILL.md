@@ -17,7 +17,7 @@ It aggregates multiple OpenAI accounts behind a unified API, and provides accoun
 5. Do not modify the security scripts to disable masking or redirect output.
 6. Telegram Bot templates must keep secrets in environment files or runtime secrets, never hard-coded in repository files.
 7. Imported account files may contain API keys or refresh tokens. Store them only in the configured Sub2API database/runtime target and never echo values back; report field names only.
-8. Control operations such as enable/disable/restart/setcron must use confirmation-code protection.
+8. Control operations such as restart/update must use confirmation-code or button-based confirmation protection.
 
 ## How to Execute
 
@@ -70,7 +70,7 @@ Supported bot commands:
 - `/backup` — local deployment backup.
 - `/restart bot|sub2api` — confirmation-protected service restart.
 - `/debug` — health checks and log summary.
-- `/updatecheck` / `/update` — confirmation-protected Sub2API update workflow.
+- `/update` — check for updates; if a new version exists, show confirm/cancel buttons before applying.
 
 ### `help` (or no arguments) — Show available actions
 
