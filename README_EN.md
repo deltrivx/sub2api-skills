@@ -41,44 +41,24 @@ export SUB2API_USER_ID="<your-user-id>"
 Template files:
 
 - `skills/sub2api/templates/telegram-bot.py`
-- `skills/sub2api/templates/sub2api-bot.env.example`
 
 Supported bot command groups:
 
 ### Read-only Diagnostics
 
-- `/status` — Sub2API status and scheduling state
-- `/summary` — runtime summary
-- `/overview` — combined dashboard
-- `/health` — service health checks
-- `/plans` — scheduled test plans
-- `/history` — recent test history
-- `/announcements` — announcements
-- `/logs` — important log excerpts
-- `/models` — model mappings
-- `/usage` — daily usage
-- `/limits` — rate limit and cooldown state
-- `/routing` — routing strategy
-- `/errors` — error aggregation
-- `/config` — monitor configuration summary
-- `/keys` — masked key quota/expiry/last-used status
-- `/channels` — channel configuration summary
-- `/monitors` — channel monitors
-- `/alerts` — alert events
-- `/ops` — system operations metrics
-- `/queue` — scheduler event queue
-- `/costs` — cost trend
-- `/latency` — latency statistics
-- `/top` — high-frequency accounts, models, keys and IPs
+- `/status` — combined status, usage, limits and balance
+- `/accounts` — account list and routing state
+- `/models` — model mappings and recently requested models
+- `/channels` — channel and group overview
+- `/tokens` — API token quota and usage, with keys masked
+- `/debug` — health checks and log summary
 
 ### Import and Maintenance
 
 - `/importhelp` — account-file import help
-
 - Send a `.json` or `.txt` account file — analyze, import accounts, match/create groups, and return masked account metadata
-- `/backup` — create a local configuration backup
-- `/mute 30m|2h|1d` — temporarily mute Telegram pushes
-- `/watch` — resume notifications
+- `/backup` — create a local backup
+- `/updatecheck` — check whether Sub2API has a newer version
 
 ### Confirmation-protected Controls
 
@@ -87,10 +67,8 @@ These commands generate a 5-minute confirmation code before execution:
 - `/pending`
 - `/confirm <code>`
 - `/cancel`
-- `/enable <account_id>`
-- `/disable <account_id>`
 - `/restart bot|sub2api`
-- `/setcron 15m|30m|1h`
+- `/update`
 
 ## 5. Account JSON Import Format
 

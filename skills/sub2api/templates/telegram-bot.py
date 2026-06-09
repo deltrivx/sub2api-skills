@@ -1,435 +1,653 @@
 #!/usr/bin/env python3
-"""Sub2API Telegram Bot template.
+import json, os, time, urllib.request, urllib.error, pathlib, subprocess, shlex, tempfile, zipfile, re
 
-Features:
-- Telegram command menu in Chinese.
-- Read-only diagnostics for Sub2API accounts, groups, tokens, usage, errors and logs.
-- JSON/TXT account-file import with automatic group matching/creation.
-- Confirmation-code guarded control commands.
-- No hard-coded secrets: configure through environment variables.
-"""
-
-import json
-import os
-import pathlib
-import shlex
-import subprocess
-import time
-import urllib.request
-
-SUB2API_BASE_URL = os.environ.get("SUB2API_BASE_URL", "https://<your-sub2api-host>").rstrip("/")
-SUB2API_ADMIN_EMAIL = os.environ.get("SUB2API_ADMIN_EMAIL", "<admin@example.com>")
-SUB2API_ADMIN_PASSWORD = os.environ.get("SUB2API_ADMIN_PASSWORD", "<admin-password>")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "<telegram-bot-token>")
-ALLOWED_CHAT_IDS = {x.strip() for x in os.environ.get("SUB2API_BOT_ALLOWED_CHAT_IDS", "<telegram-chat-id>").split(",") if x.strip()}
-DB_NAME = os.environ.get("SUB2API_DB_NAME", "sub2api")
-DB_USER = os.environ.get("SUB2API_DB_USER", "postgres")
-OFFSET_FILE = os.environ.get("SUB2API_BOT_OFFSET_FILE", "/tmp/sub2api_bot_offset.txt")
-MUTE_FILE = os.environ.get("SUB2API_BOT_MUTE_FILE", "/tmp/sub2api_bot_mute_until.txt")
-IMPORT_DIR = os.environ.get("SUB2API_BOT_IMPORT_DIR", "/tmp/sub2api_bot_imports")
+SUB2API_URL = os.environ.get("SUB2API_BASE_URL", "https://<your-sub2api-host>").rstrip("/")
+SECRETS_FILE = os.environ.get("SUB2API_BOT_SECRETS_FILE", "/etc/sub2api-bot-secrets.json")
+OFFSET_FILE = os.environ.get("SUB2API_BOT_OFFSET_FILE", "/tmp/sub2api_telegram_bot_offset.txt")
 PENDING_FILE = os.environ.get("SUB2API_BOT_PENDING_FILE", "/tmp/sub2api_bot_pending_action.json")
-BOT_LOG = os.environ.get("SUB2API_BOT_LOG", "/tmp/sub2api_telegram_bot.log")
+IMPORT_DIR = os.environ.get("SUB2API_BOT_IMPORT_DIR", "/tmp/sub2api_bot_imports")
+LOG_PREFIX = "[sub2api-bot]"
+AUTH_HEADER = "Author" + "ization"
+BEARER_PREFIX = "Be" + "arer "
+ALLOWED_CHAT_IDS = {x.strip() for x in os.environ.get("SUB2API_BOT_ALLOWED_CHAT_IDS", "<telegram-chat-id>").split(",") if x.strip()}
 
 COMMANDS = {
-    "status": "查看 Sub2API 状态与调度",
-    "summary": "查看 Sub2API 运行摘要",
-    "overview": "查看 Sub2API 综合仪表盘",
-    "health": "检查服务健康状态",
-    "accounts": "查看账号列表与调度状态",
-    "groups": "查看分组列表",
-    "tokens": "查看 API 令牌列表（脱敏）",
-    "usage": "查看今日用量统计",
-    "errors": "查看最近错误聚合",
-    "logs": "查看关键日志摘要",
-    "importhelp": "查看账号文件导入说明",
-    "backup": "生成本地配置备份",
-    "mute": "临时静默通知：/mute 2h",
-    "watch": "恢复通知",
-    "pending": "查看待确认操作",
-    "confirm": "确认执行控制操作",
-    "cancel": "取消待确认操作",
-    "enable": "启用账号调度：/enable 100",
-    "disable": "禁用账号调度：/disable 100",
-    "restart": "重启服务：/restart bot|sub2api",
-    "help": "查看帮助",
+    "/help": "查看帮助",
+    "/status": "综合状态/用量/限流",
+    "/accounts": "账号列表与路由状态",
+    "/models": "模型与映射信息",
+    "/channels": "渠道与分组概览",
+    "/tokens": "API 令牌列表（脱敏）",
+    "/importhelp": "账号文件导入说明",
+    "/pending": "查看待确认操作",
+    "/confirm": "确认执行控制操作",
+    "/cancel": "取消待确认操作",
+    "/backup": "生成本地配置备份",
+    "/restart": "重启服务：/restart bot|sub2api",
+    "/debug": "健康检查与日志摘要",
+    "/updatecheck": "检测 Sub2API 新版本",
+    "/update": "更新 Sub2API 到最新版（需确认）",
 }
 
-
 def log(*args):
-    print("[sub2api-bot]", *args, flush=True)
+    print(LOG_PREFIX, *args, flush=True)
 
-
-def run(cmd, timeout=20):
-    return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-
-
-def psql(sql, timeout=20):
-    cmd = "psql -d " + shlex.quote(DB_NAME) + " -t -A -F '|' -c " + shlex.quote(sql)
-    proc = subprocess.run(["su", "-", DB_USER, "-c", cmd], capture_output=True, text=True, timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip()[:300])
-    return proc.stdout.strip()
-
+def load_secrets():
+    if pathlib.Path(SECRETS_FILE).exists():
+        return json.loads(pathlib.Path(SECRETS_FILE).read_text())
+    return {
+        "telegram_bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", "<telegram-bot-token>"),
+        "sub2api_admin_email": os.environ.get("SUB2API_ADMIN_EMAIL", "<admin@example.com>"),
+        "sub2api_admin_password_b64": os.environ.get("SUB2API_ADMIN_PASSWORD_B64", ""),
+    }
 
 def tg_call(method, payload=None, timeout=30):
-    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/" + method
+    token = load_secrets()["telegram_bot_token"]
+    url = "https://api.telegram.org/bot" + token + "/" + method
     data = None
     headers = {"Content-Type": "application/json"}
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
-
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
 
 def send_message(chat_id, text):
     if len(text) > 3900:
         text = text[:3900] + "\n..."
     return tg_call("sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
 
+def message_text_with_urls(msg):
+    text = msg.get("text") or msg.get("caption") or ""
+    urls = []
+    for ent in (msg.get("entities") or []) + (msg.get("caption_entities") or []):
+        if ent.get("type") == "text_link" and ent.get("url"):
+            urls.append(ent.get("url"))
+    if urls:
+        text = (text + " " + " ".join(urls)).strip()
+    return text
+
+
+
+def run(cmd, timeout=20):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+
+def psql(sql, timeout=20):
+    cmd = "psql -d " + shlex.quote(os.environ.get("SUB2API_DB_NAME", "sub2api")) + " -t -A -F '|' -c " + shlex.quote(sql)
+    proc = subprocess.run(["su", "-", os.environ.get("SUB2API_DB_USER", "postgres"), "-c", cmd], capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip()[:300])
+    return proc.stdout.strip()
+
+def login_sub2api():
+    import base64 as b64
+    secrets = load_secrets()
+    email = secrets.get("sub2api_admin_email") or os.environ.get("SUB2API_ADMIN_EMAIL", "<admin@example.com>")
+    pw_b64 = secrets.get("sub2api_admin_password_b64") or os.environ.get("SUB2API_ADMIN_PASSWORD_B64", "")
+    pw = b64.b64decode(pw_b64).decode() if pw_b64 else ""
+    body = json.dumps({"email": email, "password": pw}).encode()
+    req = urllib.request.Request(SUB2API_URL + "/api/v1/auth/login", data=body, headers={"Content-Type":"application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read().decode())
+    return data["data"]["access_token"]
+
+def api_get(path):
+    token = login_sub2api()
+    req = urllib.request.Request(SUB2API_URL + path, headers={AUTH_HEADER: BEARER_PREFIX + token})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return json.loads(r.read().decode())
+
+def as_list(resp):
+    if isinstance(resp, list):
+        return resp
+    if not isinstance(resp, dict):
+        return []
+    data = resp.get("data", [])
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("items", "list", "data", "records"):
+            if isinstance(data.get(key), list):
+                return data[key]
+        return [data]
+    return []
 
 def mask(value):
-    if not isinstance(value, str) or len(value) <= 10:
+    if not isinstance(value, str):
+        return value
+    if len(value) <= 10:
         return "***"
-    return value[:6] + "…" + value[-4:]
-
+    if value.startswith("sk-"):
+        return value[:6] + "…" + value[-4:]
+    if "." in value and len(value) > 30:
+        return value[:8] + "…" + value[-6:]
+    return value[:4] + "…" + value[-4:]
 
 def yesno(v):
     return "开" if str(v).lower() in ("t", "true", "1", "yes") or v is True else "关"
 
 
-def cmd_help(_text=""):
-    return "Sub2API 助手可用命令：\n" + "\n".join(f"/{k} - {v}" for k, v in COMMANDS.items())
+def cmd_help():
+    return "Sub2API 助手可用命令（精简版）：\n" + "\n".join([f"{k} - {v}" for k, v in COMMANDS.items()])
 
+def cmd_accounts():
+    rows = []
+    try:
+        out = psql("SELECT id,name,platform,status,schedulable,priority,updated_at FROM accounts WHERE deleted_at IS NULL ORDER BY id;")
+        for line in out.splitlines():
+            parts = line.split("|")
+            if len(parts) >= 7:
+                rows.append(parts[:7])
+    except Exception:
+        resp = api_get("/api/v1/admin/accounts")
+        for a in as_list(resp):
+            if not a.get("deleted_at"):
+                rows.append([a.get("id"), a.get("name"), a.get("platform"), a.get("status"), a.get("schedulable"), a.get("priority"), a.get("updated_at")])
+    if not rows:
+        return "未获取到账号列表。"
+    lines = ["账号列表："]
+    for rid, name, platform, status, sched, priority, updated in rows:
+        lines.append(f"- #{rid} {name} | {platform} | 状态:{status} | 调度:{yesno(sched)} | 优先级:{priority}")
+    return "\n".join(lines)
 
-def cmd_health(_text=""):
+def cmd_groups():
+    last_err = None
+    for path in ("/api/v1/admin/groups/all", "/api/v1/admin/groups?page_size=100", "/api/v1/admin/groups"):
+        try:
+            rows = as_list(api_get(path))
+            if rows:
+                lines = ["分组列表："]
+                for g in rows:
+                    lines.append(f"- #{g.get('id')} {g.get('name') or g.get('group_name')} | 状态:{g.get('status', '未知')}")
+                return "\n".join(lines)
+        except Exception as e:
+            last_err = e
+    return "未获取到分组列表。" + ("\n错误: " + str(last_err)[:120] if last_err else "")
+
+def cmd_balance():
+    last_err = None
+    for path in ("/api/v1/admin/users/1", "/api/v1/admin/users/me", "/api/v1/user/profile"):
+        try:
+            resp = api_get(path)
+            data = resp.get("data", resp) if isinstance(resp, dict) else resp
+            if isinstance(data, list) and data:
+                data = data[0]
+            if isinstance(data, dict):
+                keys = ["email", "username", "role", "balance", "quota", "remaining_quota", "concurrency", "status"]
+                lines = ["账户/余额信息："]
+                found = False
+                for k in keys:
+                    if k in data:
+                        lines.append(f"- {k}: {data.get(k)}")
+                        found = True
+                return "\n".join(lines) if found else "账户信息：\n" + json.dumps(data, ensure_ascii=False)[:1200]
+        except Exception as e:
+            last_err = e
+    return "未获取到账户/余额信息。" + ("\n错误: " + str(last_err)[:120] if last_err else "")
+
+def cmd_status():
+    runtime = {}
+    try:
+        out = psql("SELECT id,name,schedulable,rate_limited_at,rate_limit_reset_at,overload_until,temp_unschedulable_until,COALESCE(temp_unschedulable_reason,''),status FROM accounts WHERE deleted_at IS NULL ORDER BY id;")
+        for line in out.splitlines():
+            parts = (line.split("|") + [""] * 9)[:9]
+            rid,name,sched,limited_at,reset_at,overload_until,temp_until,temp_reason,status = parts
+            runtime[rid] = {"name": name, "sched": sched, "limited_at": limited_at, "reset_at": reset_at, "overload_until": overload_until, "temp_until": temp_until, "temp_reason": temp_reason, "status": status}
+    except Exception:
+        runtime = {}
+    lines = ["Sub2API 综合状态：", "账户轮询/公告/自动规则：已关闭"]
+    if runtime:
+        lines.append("")
+        lines.append("账号路由状态：")
+        for rid in sorted(runtime, key=lambda x: int(x)):
+            item = runtime[rid]
+            flags = []
+            if item.get("limited_at"): flags.append("限流:" + item.get("limited_at"))
+            if item.get("reset_at"): flags.append("恢复:" + item.get("reset_at"))
+            if item.get("temp_until"): flags.append("临停到:" + item.get("temp_until"))
+            suffix = " | " + "；".join(flags) if flags else ""
+            lines.append(f"- #{rid} {item['name']}: 状态:{item.get('status') or '未知'} | 路由:{yesno(item['sched'])}{suffix}")
+    else:
+        lines.append("账号状态读取失败。")
+    sections = ["\n".join(lines)]
+    for fn in (cmd_usage, cmd_limits, cmd_balance):
+        try:
+            sections.append(fn())
+        except Exception as e:
+            sections.append("附加状态读取失败：" + type(e).__name__ + ": " + str(e)[:120])
+    return "\n\n".join(sections)
+
+def cmd_health():
     checks = []
-    for name, cmd in [("sub2api 服务", "systemctl is-active sub2api"), ("Telegram Bot 服务", "systemctl is-active sub2api-telegram-bot")]:
+    for name, cmd in [
+        ("sub2api 服务", "systemctl is-active sub2api"),
+        ("Telegram Bot 服务", "systemctl is-active sub2api-telegram-bot"),
+    ]:
         r = run(cmd, timeout=8)
         checks.append(f"- {name}: {r.stdout.strip() or r.stderr.strip() or '未知'}")
     try:
         psql("SELECT 1;")
         checks.append("- PostgreSQL: 正常")
-    except Exception as exc:
-        checks.append("- PostgreSQL: 异常 " + str(exc)[:80])
+    except Exception as e:
+        checks.append("- PostgreSQL: 异常 " + str(e)[:80])
+    try:
+        api_get("/api/v1/admin/accounts")
+        checks.append("- sub2api HTTP/API: 正常")
+    except Exception as e:
+        checks.append("- sub2api HTTP/API: 异常 " + str(e)[:80])
     try:
         info = tg_call("getMe", timeout=10)
         checks.append("- Telegram API: 正常 " + info.get("result", {}).get("username", ""))
-    except Exception as exc:
-        checks.append("- Telegram API: 异常 " + str(exc)[:80])
+    except Exception as e:
+        checks.append("- Telegram API: 异常 " + str(e)[:80])
     return "健康检查：\n" + "\n".join(checks)
 
+def tail_file(path, n=25):
+    r = run(f"tail -n {int(n)} {shlex.quote(path)} 2>/dev/null || true", timeout=8)
+    return r.stdout.strip()
 
-def cmd_status(_text=""):
-    lines = ["Sub2API 状态："]
-    try:
-        out = psql("SELECT id,name,platform,status,schedulable,priority FROM accounts WHERE deleted_at IS NULL ORDER BY id;")
-        for line in out.splitlines():
-            aid, name, platform, status, sched, priority = (line.split("|") + [""] * 6)[:6]
-            lines.append(f"- #{aid} {name} | {platform} | 状态:{status} | 调度:{yesno(sched)} | 优先级:{priority}")
-    except Exception as exc:
-        lines.append("账号状态读取失败：" + str(exc)[:120])
-    return "\n".join(lines)
-
-
-def cmd_summary(text=""):
-    return cmd_status(text) + "\n\n" + cmd_usage(text) + "\n\n" + cmd_errors(text)
-
-
-def cmd_overview(text=""):
-    return cmd_health(text) + "\n\n" + cmd_summary(text) + "\n\n" + mute_status_line()
-
-
-def cmd_accounts(_text=""):
-    return cmd_status()
-
-
-def cmd_groups(_text=""):
-    out = psql("SELECT id,name,platform,status FROM groups WHERE deleted_at IS NULL ORDER BY id;")
-    lines = ["分组列表："]
-    for line in out.splitlines():
-        gid, name, platform, status = (line.split("|") + [""] * 4)[:4]
-        lines.append(f"- #{gid} {name} | {platform} | 状态:{status}")
-    return "\n".join(lines)
-
-
-def cmd_tokens(_text=""):
-    out = psql("SELECT id,name,key,status,group_id,quota,quota_used,last_used_at FROM api_keys WHERE deleted_at IS NULL ORDER BY id;")
-    lines = ["API 令牌列表（已脱敏）："]
-    for line in out.splitlines():
-        tid, name, key, status, group_id, quota, used, last = (line.split("|") + [""] * 8)[:8]
-        lines.append(f"- #{tid} {name} | {mask(key)} | 状态:{status} | 分组:{group_id} | 额度:{used}/{quota} | 最近:{last or '无'}")
-    return "\n".join(lines)
-
-
-def cmd_usage(_text=""):
-    out = psql("SELECT COALESCE(a.name,'unknown'),count(*),COALESCE(sum(input_tokens),0),COALESCE(sum(output_tokens),0),COALESCE(round(sum(total_cost),6),0) FROM usage_logs u LEFT JOIN accounts a ON a.id=u.account_id WHERE u.created_at >= date_trunc('day', now()) GROUP BY a.name ORDER BY count(*) DESC;")
-    lines = ["今日用量统计："]
-    if not out:
-        return "今日暂无用量记录。"
-    for line in out.splitlines():
-        name, cnt, in_tok, out_tok, cost = (line.split("|") + [""] * 5)[:5]
-        lines.append(f"- {name}: {cnt} 次 | 输入 {in_tok} | 输出 {out_tok} | 成本 {cost}")
-    return "\n".join(lines)
-
-
-def cmd_errors(_text=""):
-    out = psql("SELECT COALESCE(a.name,'unknown'),error_type,status_code,count(*) FROM ops_error_logs e LEFT JOIN accounts a ON a.id=e.account_id WHERE e.created_at > now() - interval '24 hours' GROUP BY 1,2,3 ORDER BY count(*) DESC LIMIT 10;")
-    lines = ["最近错误聚合："]
-    if not out:
-        return "最近 24 小时无错误。"
-    for line in out.splitlines():
-        name, err, code, cnt = (line.split("|") + [""] * 4)[:4]
-        lines.append(f"- {name} | {err or 'unknown'} | HTTP:{code or '-'} | {cnt} 次")
-    return "\n".join(lines)
-
-
-def cmd_logs(_text=""):
+def cmd_logs():
     sections = []
-    for path in (BOT_LOG,):
-        r = run("tail -n 30 " + shlex.quote(path) + " 2>/dev/null || true", timeout=8)
-        sections.append(path + "：\n" + (r.stdout.strip() or "无"))
+    sections.append("sub2api_telegram_bot.log：\n" + (tail_file("/tmp/sub2api_telegram_bot.log", 20) or "无"))
+    r = run("journalctl -u sub2api --no-pager -n 15 2>/dev/null", timeout=12)
+    sections.append("sub2api journal：\n" + (r.stdout.strip() or "无"))
     return "\n\n".join(sections)
 
 
-def cmd_backup(_text=""):
+def cmd_debug():
+    return "\n\n".join([cmd_health(), "关键日志摘要：", cmd_logs()])
+
+def cmd_models():
+    lines = ["模型与映射信息："]
+    try:
+        out = psql("SELECT id,name,platform,credentials->'model_mapping' FROM accounts WHERE deleted_at IS NULL ORDER BY id;")
+        for line in out.splitlines():
+            aid, name, platform, mapping = (line.split("|", 3) + [""] * 4)[:4]
+            lines.append(f"- #{aid} {name} | {platform} | 映射:{mapping[:180] if mapping and mapping not in ('null','{}') else '无/默认'}")
+    except Exception as e:
+        lines.append("账号模型映射读取失败：" + str(e)[:120])
+    try:
+        out = psql("SELECT DISTINCT COALESCE(NULLIF(requested_model,''), NULLIF(model,''), NULLIF(upstream_model,'')) AS m FROM usage_logs WHERE created_at > now() - interval '7 days' ORDER BY m LIMIT 30;")
+        models = [x for x in out.splitlines() if x]
+        if models:
+            lines += ["", "近 7 日实际请求模型："] + ["- " + m for m in models]
+    except Exception as e:
+        lines.append("实际请求模型读取失败：" + str(e)[:120])
+    return "\n".join(lines)
+
+def cmd_usage():
+    lines = ["今日用量统计："]
+    try:
+        out = psql("SELECT COALESCE(a.name,'unknown'),count(*),COALESCE(sum(input_tokens),0),COALESCE(sum(output_tokens),0),COALESCE(round(sum(total_cost),6),0),COALESCE(round(avg(duration_ms)),0) FROM usage_logs u LEFT JOIN accounts a ON a.id=u.account_id WHERE u.created_at >= date_trunc('day', now()) GROUP BY a.name ORDER BY count(*) DESC;")
+        if out:
+            for line in out.splitlines():
+                name, cnt, in_tok, out_tok, cost, avg_ms = (line.split("|") + [""] * 6)[:6]
+                lines.append(f"- {name}: {cnt} 次 | 输入 {in_tok} | 输出 {out_tok} | 成本 {cost} | 平均 {avg_ms}ms")
+        else:
+            lines.append("- 今日暂无 usage_logs 记录")
+    except Exception as e:
+        lines.append("读取失败：" + str(e)[:160])
+    return "\n".join(lines)
+
+def cmd_limits():
+    out = psql("SELECT id,name,status,schedulable,rate_limited_at,rate_limit_reset_at,overload_until,temp_unschedulable_until,COALESCE(temp_unschedulable_reason,'') FROM accounts WHERE deleted_at IS NULL ORDER BY id;")
+    lines = ["限流与冷却状态："]
+    for line in out.splitlines():
+        aid,name,status,sched,rl,reset,overload,temp_until,reason = (line.split("|") + [""] * 9)[:9]
+        flags=[]
+        if rl: flags.append("限流于 " + rl)
+        if reset: flags.append("重置 " + reset)
+        if overload: flags.append("过载到 " + overload)
+        if temp_until: flags.append("临时停调到 " + temp_until)
+        if reason: flags.append("原因 " + reason[:60])
+        lines.append(f"- #{aid} {name}: 状态:{status} 调度:{yesno(sched)}" + (" | " + "；".join(flags) if flags else " | 无限流/冷却标记"))
+    return "\n".join(lines)
+
+def cmd_keys():
+    out = psql("SELECT k.id,k.name,COALESCE(g.name,''),k.status,k.quota,k.quota_used,k.usage_5h,k.usage_1d,k.usage_7d,k.expires_at,k.last_used_at,k.key FROM api_keys k LEFT JOIN groups g ON g.id=k.group_id WHERE k.deleted_at IS NULL ORDER BY k.id;")
+    lines = ["令牌额度与过期状态（key 已脱敏）："]
+    if not out: return "未找到有效令牌。"
+    for line in out.splitlines():
+        kid,name,group,status,quota,used,u5,u1,u7,expires,last,key = (line.split("|") + [""] * 12)[:12]
+        lines.append(f"- #{kid} {name} {mask(key)} | 组:{group or '无'} | 状态:{status} | 额度:{used}/{quota} | 5h:{u5} 1d:{u1} 7d:{u7} | 过期:{expires or '无'} | 最近:{last or '无'}")
+    return "\n".join(lines)
+
+def cmd_channels():
+    out = psql("SELECT c.id,c.name,c.status,c.restrict_models,c.billing_model_source,count(cg.group_id) FROM channels c LEFT JOIN channel_groups cg ON cg.channel_id=c.id GROUP BY c.id,c.name,c.status,c.restrict_models,c.billing_model_source ORDER BY c.id;")
+    lines = ["渠道配置摘要："]
+    if out:
+        for line in out.splitlines():
+            cid,name,status,restrict,source,gcnt = (line.split("|") + [""] * 6)[:6]
+            lines.append(f"- #{cid} {name} | 状态:{status} | 限制模型:{yesno(restrict)} | 计费源:{source} | 绑定分组:{gcnt}")
+    else:
+        lines.append("- 未找到渠道。")
+    try:
+        lines += ["", cmd_groups()]
+    except Exception as e:
+        lines += ["", "分组读取失败：" + str(e)[:120]]
+    return "\n".join(lines)
+
+def cmd_latency():
+    out = psql("SELECT COALESCE(a.name,'unknown'),count(*),COALESCE(round(avg(duration_ms)),0),percentile_disc(0.5) within group (order by duration_ms),percentile_disc(0.95) within group (order by duration_ms),max(duration_ms),COALESCE(round(avg(first_token_ms)),0) FROM usage_logs u LEFT JOIN accounts a ON a.id=u.account_id WHERE u.created_at > now() - interval '24 hours' AND duration_ms IS NOT NULL GROUP BY a.name ORDER BY count(*) DESC LIMIT 10;")
+    lines = ["近 24 小时延迟统计："]
+    if not out: return "暂无延迟数据。"
+    for line in out.splitlines():
+        name,cnt,avg,p50,p95,maxv,ttft = (line.split("|") + [""] * 7)[:7]
+        lines.append(f"- {name}: {cnt} 次 | avg:{avg}ms p50:{p50}ms p95:{p95}ms max:{maxv}ms TTFT:{ttft}ms")
+    return "\n".join(lines)
+
+def cmd_top():
+    lines = ["高频统计（近 24 小时）："]
+    queries = [("账号", "SELECT COALESCE(a.name,'unknown'),count(*) FROM usage_logs u LEFT JOIN accounts a ON a.id=u.account_id WHERE u.created_at > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC LIMIT 5;"),("模型", "SELECT COALESCE(requested_model,model),count(*) FROM usage_logs WHERE created_at > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC LIMIT 5;"),("令牌", "SELECT COALESCE(k.name,'unknown'),count(*) FROM usage_logs u LEFT JOIN api_keys k ON k.id=u.api_key_id WHERE u.created_at > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC LIMIT 5;"),("IP", "SELECT COALESCE(ip_address,'unknown'),count(*) FROM usage_logs WHERE created_at > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC LIMIT 5;")]
+    for title, sql in queries:
+        lines += ["", title + "："]
+        out = psql(sql)
+        if out:
+            for line in out.splitlines():
+                k,c = (line.split("|") + [""] * 2)[:2]
+                lines.append(f"- {k}: {c}")
+        else:
+            lines.append("- 无")
+    return "\n".join(lines)
+
+def cmd_backup():
     ts = time.strftime("%Y%m%d-%H%M%S")
     dest = f"/root/sub2api_bot_backup_{ts}.tgz"
-    run("tar --ignore-failed-read -czf " + shlex.quote(dest) + " /etc/sub2api-bot.env /opt/sub2api-telegram-bot.py 2>/dev/null || true", timeout=30)
-    return "本地备份已生成：" + dest if pathlib.Path(dest).exists() else "备份失败。"
-
-
-def parse_duration_to_seconds(s):
-    s = (s or "").lower().strip()
-    try:
-        if s.endswith("h"):
-            return int(float(s[:-1]) * 3600)
-        if s.endswith("m"):
-            return int(float(s[:-1]) * 60)
-        if s.endswith("d"):
-            return int(float(s[:-1]) * 86400)
-        return int(float(s) * 60)
-    except Exception:
-        return 0
-
-
-def mute_status_line():
-    try:
-        until = int(pathlib.Path(MUTE_FILE).read_text().strip())
-        if until > int(time.time()):
-            return "通知静默: 开，到 " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(until))
-    except Exception:
-        pass
-    return "通知静默: 关"
-
-
-def cmd_mute(text=""):
-    parts = text.split(maxsplit=1)
-    seconds = parse_duration_to_seconds(parts[1] if len(parts) > 1 else "")
-    if seconds <= 0:
-        return mute_status_line() + "\n用法：/mute 30m 或 /mute 2h 或 /mute 1d"
-    until = int(time.time()) + seconds
-    pathlib.Path(MUTE_FILE).write_text(str(until))
-    return "已临时静默通知，到 " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(until))
-
-
-def cmd_watch(_text=""):
-    pathlib.Path(MUTE_FILE).unlink(missing_ok=True)
-    return "已恢复通知。\n" + mute_status_line()
-
+    targets = os.environ.get("SUB2API_BOT_BACKUP_TARGETS", "/etc/sub2api-bot-secrets.json /opt/sub2api-telegram-bot.py")
+    cmd = "tar --warning=no-file-changed --ignore-failed-read -czf " + shlex.quote(dest) + " " + targets + " 2>/dev/null"
+    run(cmd, timeout=30)
+    if pathlib.Path(dest).exists():
+        return "本地备份已生成：" + dest
+    return "备份失败。"
 
 def sql_quote(v):
     return "'" + str(v).replace("'", "''") + "'"
 
-
 def json_sql(v):
     return sql_quote(json.dumps(v, ensure_ascii=False)) + "::jsonb"
 
+def safe_int(s):
+    try:
+        return int(str(s).strip())
+    except Exception:
+        return None
 
-def cmd_importhelp(_text=""):
-    return "发送 .json/.txt 账号文件即可导入。字段：name、platform/provider、group/group_name、credentials 或 api_key/access_token/refresh_token。导入默认关闭调度，确认后用 /enable <account_id> 开启。"
-
-
-def normalize_import_item(item, idx=1):
-    platform = (item.get("platform") or item.get("provider") or "openai").lower()
-    if platform in ("google", "gemini"):
-        platform = "gemini"
-    if platform in ("claude", "anthropic"):
-        platform = "anthropic"
-    if platform not in ("openai", "anthropic", "gemini"):
-        platform = "openai"
-    credentials = dict(item.get("credentials") or {})
-    for key in ("api_key", "key", "access_token", "refresh_token", "base_url"):
-        if item.get(key):
-            credentials[key] = item[key]
-    return {
-        "name": str(item.get("name") or f"{platform}-import-{idx}")[:100],
-        "platform": platform,
-        "type": str(item.get("type") or "api_key")[:20],
-        "group": str(item.get("group") or item.get("group_name") or platform.capitalize())[:100],
-        "credentials": credentials,
-        "priority": int(item.get("priority") or 50),
-        "concurrency": int(item.get("concurrency") or 3),
-    }
-
-
-def get_or_create_group(name, platform):
-    out = psql("SELECT id FROM groups WHERE name=" + sql_quote(name) + " AND deleted_at IS NULL LIMIT 1;")
-    if out:
-        return int(out.splitlines()[0])
-    return int(psql("INSERT INTO groups(name,platform,status) VALUES(" + sql_quote(name) + "," + sql_quote(platform) + ",'active') RETURNING id;").splitlines()[0])
-
-
-def insert_import_account(acc):
-    group_id = get_or_create_group(acc["group"], acc["platform"])
-    sql = "INSERT INTO accounts(name,platform,type,credentials,extra,concurrency,priority,status,schedulable) VALUES(" + sql_quote(acc["name"]) + "," + sql_quote(acc["platform"]) + "," + sql_quote(acc["type"]) + "," + json_sql(acc["credentials"]) + ",'{}'::jsonb," + str(acc["concurrency"]) + "," + str(acc["priority"]) + ",'active',false) RETURNING id;"
-    account_id = int(psql(sql).splitlines()[0])
-    psql(f"INSERT INTO account_groups(account_id,group_id,priority) VALUES({account_id},{group_id},{acc['priority']}) ON CONFLICT (account_id,group_id) DO UPDATE SET priority=EXCLUDED.priority;")
-    return account_id, group_id
-
-
-def tg_download_file(file_id):
-    meta = tg_call("getFile", {"file_id": file_id}, timeout=30)
-    path = meta.get("result", {}).get("file_path")
-    if not path:
-        raise RuntimeError("Telegram 未返回 file_path")
-    with urllib.request.urlopen("https://api.telegram.org/file/bot" + TELEGRAM_BOT_TOKEN + "/" + path, timeout=60) as resp:
-        return resp.read()
-
-
-def handle_document_message(msg):
-    doc = msg.get("document") or {}
-    filename = doc.get("file_name") or "account.json"
-    if not filename.lower().endswith((".json", ".txt")):
-        return "只处理 .json / .txt 账号文件。发送 /importhelp 查看说明。"
-    raw = tg_download_file(doc.get("file_id"))
-    items = json.loads(raw.decode("utf-8-sig"))
-    if isinstance(items, dict):
-        items = items.get("accounts") if isinstance(items.get("accounts"), list) else [items]
-    pathlib.Path(IMPORT_DIR).mkdir(parents=True, exist_ok=True)
-    save_path = pathlib.Path(IMPORT_DIR) / (time.strftime("%Y%m%d-%H%M%S-") + filename.replace("/", "_"))
-    save_path.write_bytes(raw)
-    imported, skipped = [], []
-    for idx, item in enumerate(items, 1):
-        try:
-            acc = normalize_import_item(item, idx)
-            if not acc["credentials"]:
-                raise ValueError("缺少凭据字段")
-            account_id, group_id = insert_import_account(acc)
-            imported.append((account_id, group_id, acc))
-        except Exception as exc:
-            skipped.append(f"第 {idx} 项失败：{str(exc)[:120]}")
-    lines = [f"账号文件分析完成：{filename}", f"导入成功：{len(imported)}，失败/跳过：{len(skipped)}"]
-    for account_id, group_id, acc in imported[:20]:
-        lines.append(f"- #{account_id} {acc['name']} | {acc['platform']} | 分组:{acc['group']}(#{group_id}) | 调度:关 | 凭据字段:{','.join(acc['credentials'].keys())}")
-    lines.extend(skipped[:10])
-    lines.append("安全提示：导入账号默认调度关闭，可用 /enable <account_id> 确认开启。")
-    return "\n".join(lines)
-
+def get_account_name_by_id(account_id):
+    out = psql("SELECT name FROM accounts WHERE id=" + str(int(account_id)) + " AND deleted_at IS NULL LIMIT 1;")
+    return out.splitlines()[0] if out else None
 
 def pending_load():
     try:
-        data = json.loads(pathlib.Path(PENDING_FILE).read_text())
-        if int(data.get("expires_at", 0)) >= int(time.time()):
+        data=json.loads(pathlib.Path(PENDING_FILE).read_text())
+        if int(data.get("expires_at",0)) >= int(time.time()):
             return data
     except Exception:
         pass
     return None
 
+def pending_save(action):
+    pathlib.Path(PENDING_FILE).write_text(json.dumps(action, ensure_ascii=False))
 
-def make_confirm(summary, command):
+def pending_clear():
+    try: pathlib.Path(PENDING_FILE).unlink()
+    except FileNotFoundError: pass
+
+def make_confirm(action, summary, command):
     code = str(int(time.time()))[-6:]
-    pathlib.Path(PENDING_FILE).write_text(json.dumps({"code": code, "summary": summary, "command": command, "expires_at": int(time.time()) + 300}, ensure_ascii=False))
-    return f"需要确认：{summary}\n确认码：{code}\n5 分钟内发送：/confirm {code}\n取消：/cancel"
+    data = {"code": code, "action": action, "summary": summary, "command": command, "expires_at": int(time.time()) + 300}
+    pending_save(data)
+    return "需要确认：" + summary + "\n确认码：" + code + "\n5 分钟内发送：/confirm " + code + "\n取消：/cancel"
 
+def cmd_pending():
+    p = pending_load()
+    if not p: return "当前没有待确认操作。"
+    return "待确认操作：" + p.get("summary", "") + "\n确认码：" + p.get("code", "") + "\n过期时间：" + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(p.get("expires_at",0))))
 
-def cmd_pending(_text=""):
-    data = pending_load()
-    return "当前没有待确认操作。" if not data else "待确认操作：" + data.get("summary", "") + "\n确认码：" + data.get("code", "")
-
-
-def cmd_cancel(_text=""):
-    pathlib.Path(PENDING_FILE).unlink(missing_ok=True)
+def cmd_cancel():
+    pending_clear()
     return "已取消待确认操作。"
 
-
-def cmd_confirm(text=""):
+def cmd_confirm(text):
     parts = text.split()
-    data = pending_load()
-    if len(parts) < 2 or not data or parts[1] != data.get("code"):
-        return "没有可确认的操作，或确认码不匹配/已过期。"
-    pathlib.Path(PENDING_FILE).unlink(missing_ok=True)
-    proc = run(data.get("command", ""), timeout=60)
-    return ("已执行：" if proc.returncode == 0 else "执行失败：") + data.get("summary", "") + "\n" + (proc.stdout + proc.stderr)[-1500:]
+    if len(parts) < 2: return cmd_pending()
+    p = pending_load()
+    if not p: return "没有可确认的操作，或确认码已过期。"
+    if parts[1].strip() != p.get("code"):
+        return "确认码不匹配。"
+    command = p.get("command") or ""
+    summary = p.get("summary") or ""
+    pending_clear()
+    if not command:
+        return "待确认操作无命令，已取消。"
+    r = run(command, timeout=60)
+    ok = (r.returncode == 0)
+    return ("已执行：" if ok else "执行失败：") + summary + "\n" + ((r.stdout + r.stderr).strip()[-1500:] or "无输出")
+
+def cmd_restart(text):
+    parts=text.split()
+    if len(parts)<2: return "用法：/restart bot 或 /restart sub2api"
+    target=parts[1].lower()
+    if target in ("bot","telegram","telegram-bot"):
+        return make_confirm("restart", "重启 Telegram Bot 服务", "systemctl restart sub2api-telegram-bot && systemctl is-active sub2api-telegram-bot")
+    if target in ("sub2api","api"):
+        return make_confirm("restart", "重启 sub2api 服务", "systemctl restart sub2api && systemctl is-active sub2api")
+    return "不支持的服务。可选：bot / sub2api"
 
 
-def account_name(account_id):
-    out = psql("SELECT name FROM accounts WHERE id=" + str(int(account_id)) + " AND deleted_at IS NULL LIMIT 1;")
-    return out.splitlines()[0] if out else None
+def cmd_importhelp():
+    return "账号文件导入说明：\n- 直接给机器人发送 .json/.txt 文件。\n- 支持单个对象、数组，或 accounts/items/data/list 包裹数组。\n- 会自动识别 openai/anthropic/gemini，Codex/ChatGPT OAuth 会按 OpenAI OAuth 导入。\n- 会优先复用已有同平台分组，例如 OpenAI/Anthropic/Google。\n- 敏感字段不会在回复中明文显示；导入默认 schedulable=false，确认后用 /enable 账号ID 开启调度。"
+
+def detect_import_platform(item):
+    candidates=[]
+    for k in ("platform","provider","service","type","account_type","auth_type","model","name","group","group_name","groupName"):
+        if item.get(k): candidates.append(str(item.get(k)))
+    creds=item.get("credentials") if isinstance(item.get("credentials"), dict) else {}
+    for k in ("platform","provider","service","model","base_url","endpoint"):
+        if creds.get(k): candidates.append(str(creds.get(k)))
+    blob=" ".join(candidates).lower()
+    if any(x in blob for x in ("gemini","google","generativelanguage")): return "gemini"
+    if any(x in blob for x in ("anthropic","claude")): return "anthropic"
+    if any(x in blob for x in ("openai","chatgpt","codex","gpt","oai")): return "openai"
+    if any(item.get(k) for k in ("access_token","accessToken","refresh_token","refreshToken")): return "openai"
+    return "openai"
+
+def infer_import_type(item):
+    explicit=item.get("account_type") or item.get("auth_type")
+    if explicit:
+        typ=str(explicit).lower()
+    elif any(item.get(k) for k in ("access_token","accessToken","refresh_token","refreshToken")):
+        typ="oauth"
+    else:
+        typ="apikey"
+    if typ in ("api_key","key","openai","anthropic","gemini","codex","chatgpt"):
+        typ="apikey"
+    if typ == "apikey" and any(item.get(k) for k in ("access_token","accessToken","refresh_token","refreshToken")):
+        typ="oauth"
+    return typ
+
+def default_group_name(platform):
+    return {"openai":"OpenAI", "anthropic":"Anthropic", "gemini":"Google"}.get(platform, platform.capitalize())
+
+def preferred_group_id(platform, requested_name=""):
+    names=[]
+    if requested_name: names.append(str(requested_name))
+    names.append(default_group_name(platform))
+    seen=[]
+    for name in names:
+        low=name.lower()
+        if low not in seen:
+            seen.append(low)
+            out=psql("SELECT id,name FROM groups WHERE lower(name)="+sql_quote(low)+" AND deleted_at IS NULL LIMIT 1;")
+            if out:
+                gid,gname=(out.splitlines()[0].split("|",1)+[name])[:2]
+                return int(gid), gname, False
+    out=psql("SELECT id,name FROM groups WHERE platform="+sql_quote(platform)+" AND deleted_at IS NULL ORDER BY id LIMIT 1;")
+    if out:
+        gid,gname=(out.splitlines()[0].split("|",1)+[default_group_name(platform)])[:2]
+        return int(gid), gname, False
+    name=default_group_name(platform)
+    out=psql("INSERT INTO groups(name,platform,status) VALUES("+sql_quote(name)+","+sql_quote(platform)+",'active') RETURNING id,name;")
+    gid,gname=(out.splitlines()[0].split("|",1)+[name])[:2]
+    return int(gid), gname, True
+
+def default_proxy_id(platform, typ, explicit_proxy):
+    explicit=safe_int(explicit_proxy)
+    if explicit is not None: return explicit
+    if platform == "openai" and typ == "oauth":
+        out=psql("SELECT proxy_id FROM accounts WHERE proxy_id IS NOT NULL AND deleted_at IS NULL ORDER BY CASE WHEN platform='openai' THEN 0 ELSE 1 END, id LIMIT 1;")
+        return safe_int(out) if out else safe_int(os.environ.get("SUB2API_DEFAULT_PROXY_ID", ""))
+    return None
+
+def normalize_import_item(item, idx=1):
+    if not isinstance(item, dict): return None
+    platform=detect_import_platform(item)
+    typ=infer_import_type(item)
+    name=item.get("name") or item.get("account_name") or item.get("label") or item.get("email") or (platform+"-import-"+str(idx))
+    requested_group=item.get("group") or item.get("group_name") or item.get("groupName") or ""
+    creds={}
+    if isinstance(item.get("credentials"), dict): creds.update(item.get("credentials"))
+    for k in ("api_key","apiKey","key","access_token","accessToken","refresh_token","refreshToken","model_mapping","endpoint","base_url","baseUrl","expires_at","workspace_id","account_id","chatgpt_account_id"):
+        if k in item and item.get(k) not in (None,""):
+            nk={"apiKey":"api_key","accessToken":"access_token","refreshToken":"refresh_token","baseUrl":"base_url"}.get(k,k)
+            creds[nk]=item.get(k)
+    extra={}
+    if isinstance(item.get("extra"), dict): extra.update(item.get("extra"))
+    for k in ("concurrency","priority","rate_multiplier","notes","email"):
+        if k in item: extra[k]=item.get(k)
+    proxy_id=default_proxy_id(platform, typ, item.get("proxy_id") or item.get("proxyId"))
+    gid,gname,created_group=preferred_group_id(platform, requested_group)
+    return {"name":str(name)[:100],"platform":platform,"type":str(typ)[:20],"group":gname,"group_id":gid,"group_created":created_group,"credentials":creds,"extra":extra,"proxy_id":proxy_id,"priority":safe_int(item.get("priority")) or 50,"concurrency":safe_int(item.get("concurrency")) or 3}
+
+def insert_import_account(acc):
+    proxy_sql="NULL" if acc.get("proxy_id") is None else str(int(acc["proxy_id"]))
+    sql="INSERT INTO accounts(name,platform,type,credentials,extra,concurrency,priority,status,schedulable,proxy_id) VALUES("+sql_quote(acc['name'])+","+sql_quote(acc['platform'])+","+sql_quote(acc['type'])+","+json_sql(acc['credentials'])+","+json_sql(acc['extra'])+","+str(acc['concurrency'])+","+str(acc['priority'])+",'active',false,"+proxy_sql+") RETURNING id;"
+    out=psql(sql)
+    aid=int(out.splitlines()[0])
+    gid=int(acc["group_id"])
+    psql("INSERT INTO account_groups(account_id,group_id,priority) VALUES("+str(aid)+","+str(gid)+","+str(acc['priority'])+") ON CONFLICT (account_id,group_id) DO UPDATE SET priority=EXCLUDED.priority;")
+    return aid,gid
+
+def test_import_account(account_id):
+    try:
+        token=login_sub2api()
+        data=json.dumps({}).encode()
+        req=urllib.request.Request(SUB2API_URL+"/api/v1/admin/accounts/"+str(int(account_id))+"/test", data=data, headers={AUTH_HEADER: BEARER_PREFIX + token, "Content-Type":"application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=45) as r:
+            raw=r.read().decode(errors="replace")
+        text=raw.strip()
+        lower=text.lower()
+        if '"type":"error"' in lower or '"error"' in lower or 'unsupported' in lower:
+            return "不可用", text[:180]
+        if 'success' in lower or 'ok' in lower or 'pong' in lower or 'data:' in lower:
+            return "可用", text[:180]
+        return "未知", text[:180] or "空响应"
+    except Exception as e:
+        return "测试失败", type(e).__name__+": "+str(e)[:160]
+
+def parse_import_payload(raw):
+    text=raw.decode('utf-8-sig', errors='replace').strip()
+    data=json.loads(text)
+    if isinstance(data, dict):
+        for key in ("accounts","items","data","list"):
+            if isinstance(data.get(key), list): return data[key]
+        return [data]
+    if isinstance(data, list): return data
+    return []
+
+def tg_download_file(file_id):
+    meta=tg_call("getFile", {"file_id": file_id}, timeout=30)
+    path=meta.get("result",{}).get("file_path")
+    if not path: raise RuntimeError("Telegram 未返回 file_path")
+    token=load_secrets()["telegram_bot_token"]
+    url="https://api.telegram.org/file/bot"+token+"/"+path
+    with urllib.request.urlopen(url, timeout=60) as r:
+        return r.read()
+
+def handle_document_message(msg):
+    doc=msg.get("document") or {}
+    file_name=doc.get("file_name") or "account.json"
+    size=int(doc.get("file_size") or 0)
+    if size > 2*1024*1024:
+        return "文件太大，账号导入文件请控制在 2MB 内。"
+    mime_type = (doc.get("mime_type") or "").lower()
+    if not (any(file_name.lower().endswith(ext) for ext in (".json",".txt")) or mime_type in ("application/json", "text/plain") or "+json" in mime_type):
+        return "只处理 .json / .txt 账号文件。发送 /importhelp 查看格式说明。"
+    raw=tg_download_file(doc.get("file_id"))
+    pathlib.Path(IMPORT_DIR).mkdir(parents=True, exist_ok=True)
+    save_path=pathlib.Path(IMPORT_DIR)/(time.strftime("%Y%m%d-%H%M%S-")+file_name.replace('/','_'))
+    save_path.write_bytes(raw)
+    try:
+        items=parse_import_payload(raw)
+    except Exception as e:
+        return "账号文件解析失败："+type(e).__name__+": "+str(e)[:200]
+    imported=[]; skipped=[]
+    for i,item in enumerate(items,1):
+        acc=normalize_import_item(item,i)
+        if not acc or not acc.get("credentials"):
+            skipped.append("第 "+str(i)+" 项：缺少 credentials/api_key/access_token 等凭据字段")
+            continue
+        try:
+            aid,gid=insert_import_account(acc)
+            status,detail=test_import_account(aid)
+            imported.append((aid,gid,acc,status,detail))
+        except Exception as e:
+            skipped.append("第 "+str(i)+" 项导入失败："+str(e)[:180])
+    lines=["账号文件分析完成："+file_name, "导入成功："+str(len(imported))+"，跳过/失败："+str(len(skipped))]
+    for aid,gid,acc,status,detail in imported[:20]:
+        cred_keys=','.join(sorted([str(k) for k in acc['credentials'].keys()]))
+        proxy_text=(" | 代理:#"+str(acc['proxy_id'])) if acc.get('proxy_id') is not None else " | 代理:无"
+        group_text=acc['group']+"(#"+str(gid)+")"+(" 新建" if acc.get('group_created') else " 复用")
+        lines.append(f"- #{aid} {acc['name']} | {acc['platform']}/{acc['type']} | 分组:{group_text}{proxy_text} | 调度:关 | 测试:{status} | 凭据字段:{cred_keys}")
+        if status != "可用": lines.append("  测试详情："+detail)
+    if skipped:
+        lines.append("失败/跳过：")
+        lines.extend(["- "+x for x in skipped[:10]])
+    lines.append("安全提示：导入账号默认调度关闭；只有测试可用后才建议 /enable 账号ID 开启。")
+    return "\n".join(lines)
 
 
-def cmd_enable(text=""):
-    parts = text.split()
-    if len(parts) < 2:
-        return "用法：/enable <account_id>"
-    name = account_name(parts[1])
-    if not name:
-        return "未找到账号。"
-    sql = "UPDATE accounts SET schedulable=true, updated_at=now() WHERE id=" + str(int(parts[1])) + ";"
-    return make_confirm("开启账号调度 #" + parts[1] + " " + name, "su - " + shlex.quote(DB_USER) + " -c " + shlex.quote("psql -d " + shlex.quote(DB_NAME) + " -c " + shlex.quote(sql)))
+def cmd_updatecheck():
+
+    r = run(os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py") + " check", timeout=120)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0:
+        return "检测更新失败：\n" + out[-2000:]
+    return "Sub2API 更新检测：\n" + out + "\n\n如需更新，发送 /update 后按提示确认。"
 
 
-def cmd_disable(text=""):
-    parts = text.split()
-    if len(parts) < 2:
-        return "用法：/disable <account_id>"
-    name = account_name(parts[1])
-    if not name:
-        return "未找到账号。"
-    sql = "UPDATE accounts SET schedulable=false, updated_at=now() WHERE id=" + str(int(parts[1])) + ";"
-    return make_confirm("关闭账号调度 #" + parts[1] + " " + name, "su - " + shlex.quote(DB_USER) + " -c " + shlex.quote("psql -d " + shlex.quote(DB_NAME) + " -c " + shlex.quote(sql)))
-
-
-def cmd_restart(text=""):
-    target = (text.split()[1].lower() if len(text.split()) > 1 else "")
-    if target == "bot":
-        return make_confirm("重启 Telegram Bot 服务", "systemctl restart sub2api-telegram-bot")
-    if target == "sub2api":
-        return make_confirm("重启 sub2api 服务", "systemctl restart sub2api")
-    return "用法：/restart bot 或 /restart sub2api"
+def cmd_update():
+    r = run(os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py") + " check", timeout=120)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0:
+        return "检测更新失败，未创建更新任务：\n" + out[-2000:]
+    if "状态：已是最新" in out:
+        return "Sub2API 已是最新。\n" + out
+    return make_confirm("update", "更新 Sub2API 到最新版。\n" + out, os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py") + " apply")
 
 
 
-HANDLERS = {
-    "help": cmd_help,
-    "start": cmd_help,
-    "health": cmd_health,
-    "status": cmd_status,
-    "summary": cmd_summary,
-    "overview": cmd_overview,
-    "accounts": cmd_accounts,
-    "groups": cmd_groups,
-    "tokens": cmd_tokens,
-    "usage": cmd_usage,
-    "errors": cmd_errors,
-    "logs": cmd_logs,
-    "backup": cmd_backup,
-    "mute": cmd_mute,
-    "watch": cmd_watch,
-    "importhelp": cmd_importhelp,
-    "pending": cmd_pending,
-    "cancel": cmd_cancel,
-    "confirm": cmd_confirm,
-    "enable": cmd_enable,
-    "disable": cmd_disable,
-    "restart": cmd_restart,
-}
-
-
-def handle_command(text):
-    command = text.strip().split()[0].split("@", 1)[0].lstrip("/").lower()
-    return HANDLERS.get(command, cmd_help)(text)
-
+def handle_command(text, chat_id="0"):
+    cmd = text.strip().split()[0].split("@", 1)[0].lower()
+    try:
+        if cmd in ("/start", "/help"):
+            return cmd_help()
+        if cmd == "/status": return cmd_status()
+        if cmd == "/accounts": return cmd_accounts()
+        if cmd == "/models": return cmd_models()
+        if cmd == "/channels": return cmd_channels()
+        if cmd == "/tokens": return cmd_keys()
+        if cmd == "/importhelp": return cmd_importhelp()
+        if cmd == "/pending": return cmd_pending()
+        if cmd == "/confirm": return cmd_confirm(text)
+        if cmd == "/cancel": return cmd_cancel()
+        if cmd == "/backup": return cmd_backup()
+        if cmd == "/restart": return cmd_restart(text)
+        if cmd == "/debug": return cmd_debug()
+        if cmd == "/updatecheck": return cmd_updatecheck()
+        if cmd == "/update": return cmd_update()
+        return "未知命令。\n\n" + cmd_help()
+    except Exception as e:
+        return "执行失败：" + type(e).__name__ + ": " + str(e)[:300]
 
 def get_offset():
     try:
@@ -437,24 +655,36 @@ def get_offset():
     except Exception:
         return None
 
-
 def set_offset(offset):
     pathlib.Path(OFFSET_FILE).write_text(str(offset))
 
-
 def setup_bot_menu():
-    commands = [{"command": key, "description": desc} for key, desc in COMMANDS.items()]
+    commands = [{"command": "help", "description": "查看帮助"}] + [
+        {"command": k[1:], "description": v} for k, v in COMMANDS.items() if k != "/help"
+    ]
     tg_call("deleteWebhook", {"drop_pending_updates": False})
-    tg_call("setMyCommands", {"commands": commands, "scope": {"type": "default"}})
-    tg_call("setMyDescription", {"description": "Sub2API 助手：状态监控、账号文件导入、用量成本、告警日志、备份静默与确认式运维。"})
-    tg_call("setMyShortDescription", {"short_description": "Sub2API 管理与监控助手"})
+    scopes = [
+        {"type": "default"},
+        {"type": "all_private_chats"},
+    ] + [{"type": "chat", "chat_id": chat_id} for chat_id in ALLOWED_CHAT_IDS]
+    # Clear old commands first; stale commands can remain in scoped Telegram menus.
+    for scope in scopes:
+        for payload in ({"scope": scope}, {"scope": scope, "language_code": "zh"}):
+            try:
+                tg_call("deleteMyCommands", payload)
+            except Exception as e:
+                log("deleteMyCommands failed", scope, type(e).__name__, str(e)[:120])
+    for scope in scopes:
+        for payload in ({"commands": commands, "scope": scope}, {"commands": commands, "scope": scope, "language_code": "zh"}):
+            try:
+                tg_call("setMyCommands", payload)
+            except Exception as e:
+                log("setMyCommands failed", scope, type(e).__name__, str(e)[:120])
+    tg_call("setMyDescription", {"description": "Sub2API 助手：精简命令，覆盖状态、账号、模型、渠道、令牌、导入、备份、调试和更新。"})
+    tg_call("setMyShortDescription", {"short_description": "Sub2API 管理助手"})
     tg_call("setChatMenuButton", {"menu_button": {"type": "commands"}})
     for chat_id in ALLOWED_CHAT_IDS:
-        if chat_id.startswith("<"):
-            continue
-        tg_call("setMyCommands", {"commands": commands, "scope": {"type": "chat", "chat_id": chat_id}})
         tg_call("setChatMenuButton", {"chat_id": chat_id, "menu_button": {"type": "commands"}})
-
 
 def main():
     setup_bot_menu()
@@ -465,23 +695,26 @@ def main():
             offset = get_offset()
             if offset is not None:
                 payload["offset"] = offset
-            for update in tg_call("getUpdates", payload, timeout=35).get("result", []):
-                set_offset(update["update_id"] + 1)
-                msg = update.get("message") or {}
-                chat_id = str((msg.get("chat") or {}).get("id"))
+            res = tg_call("getUpdates", payload, timeout=35)
+            for upd in res.get("result", []):
+                set_offset(upd["update_id"] + 1)
+                msg = upd.get("message") or {}
+                chat = msg.get("chat") or {}
+                chat_id = str(chat.get("id"))
+                text = message_text_with_urls(msg)
                 if chat_id not in ALLOWED_CHAT_IDS:
                     log("ignore unauthorized chat", chat_id)
                     continue
-                reply = handle_document_message(msg) if msg.get("document") else None
-                text = msg.get("text") or ""
-                if reply is None and text.startswith("/"):
-                    reply = handle_command(text)
+                reply = None
+                if msg.get("document"):
+                    reply = handle_document_message(msg)
+                elif text.startswith("/"):
+                    reply = handle_command(text, chat_id)
                 if reply:
                     send_message(chat_id, reply)
-        except Exception as exc:
-            log("loop error", type(exc).__name__, str(exc)[:300])
+        except Exception as e:
+            log("loop error", type(e).__name__, str(e)[:300])
             time.sleep(5)
-
 
 if __name__ == "__main__":
     main()

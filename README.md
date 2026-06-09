@@ -43,44 +43,24 @@ export SUB2API_USER_ID="<your-user-id>"
 模板位置：
 
 - `skills/sub2api/templates/telegram-bot.py`
-- `skills/sub2api/templates/sub2api-bot.env.example`
 
 机器人菜单支持：
 
 ### 查询与诊断
 
-- `/status`：查看 Sub2API 状态与调度
-- `/summary`：查看 Sub2API 运行摘要
-- `/overview`：查看综合仪表盘
-- `/health`：检查服务健康状态
-- `/plans`：查看定时测试计划
-- `/history`：查看测试历史
-- `/announcements`：查看公告
-- `/logs`：查看关键日志
-- `/models`：查看模型与映射
-- `/usage`：查看今日用量
-- `/limits`：查看限流/冷却状态
-- `/routing`：查看路由策略
-- `/errors`：查看错误聚合
-- `/config`：查看监控配置摘要
-- `/keys`：查看令牌额度与过期状态，Key 脱敏
-- `/channels`：查看渠道配置
-- `/monitors`：查看通道监控器
-- `/alerts`：查看告警事件
-- `/ops`：查看系统运行指标
-- `/queue`：查看调度事件队列
-- `/costs`：查看成本趋势
-- `/latency`：查看延迟统计
-- `/top`：查看高频账号、模型、令牌、IP
+- `/status`：综合状态、用量、限流和余额
+- `/accounts`：账号列表与路由状态
+- `/models`：模型与映射信息
+- `/channels`：渠道与分组概览
+- `/tokens`：API 令牌列表、额度与用量，Key 脱敏
+- `/debug`：健康检查与日志摘要
 
 ### 导入与维护
 
 - `/importhelp`：查看账号文件导入说明
-
 - 发送 `.json` / `.txt` 账号文件：自动分析、创建/匹配分组、导入账号并报告账号信息
 - `/backup`：生成本地配置备份
-- `/mute 30m|2h|1d`：临时静默 Telegram 推送
-- `/watch`：恢复通知
+- `/updatecheck`：检测 Sub2API 新版本
 
 ### 带确认码的控制命令
 
@@ -89,10 +69,8 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/pending`：查看待确认操作
 - `/confirm <code>`：确认执行
 - `/cancel`：取消待确认操作
-- `/enable <account_id>`：启用账号调度
-- `/disable <account_id>`：禁用账号调度
 - `/restart bot|sub2api`：重启服务
-- `/setcron 15m|30m|1h`：修改监控频率
+- `/update`：更新 Sub2API 到最新版
 
 ## 五、账号 JSON 导入格式
 

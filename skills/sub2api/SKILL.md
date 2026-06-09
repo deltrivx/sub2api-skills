@@ -49,16 +49,28 @@ This repository also ships a deployment template under `templates/` for a Telegr
 
 Template capabilities include:
 
-- Chinese Telegram menu and Sub2API status commands.
-- Read-only diagnostics for accounts, groups, tokens, usage, errors and logs.
-- JSON/TXT account-file import with automatic group matching/creation.
+- Chinese Telegram command menu.
+- Comprehensive Sub2API status, account routing, usage, limits, balance, model, channel and token diagnostics.
+- JSON/TXT account-file import with automatic group matching/creation and account testing.
 - Safe reporting of imported account metadata without printing secrets.
-- Confirmation-code guarded controls for enable/disable/restart/setcron.
-- Local backup and mute/watch notification controls.
+- Confirmation-code guarded restart/update controls.
+- Local backup and debug/log summary commands.
+- Secrets are loaded from environment variables or a deployment-local secrets JSON file; no real deployment values should be committed.
 
+Supported bot commands:
 
-
-Use placeholders and environment variables from `templates/sub2api-bot.env.example`; never commit real deployment values.
+- `/help` — show help.
+- `/status` — combined status, usage, limits and balance.
+- `/accounts` — account list and routing state.
+- `/models` — model mappings and recently requested models.
+- `/channels` — channel and group overview.
+- `/tokens` — API token quota and usage, with keys masked.
+- `/importhelp` — account file import instructions.
+- `/pending` / `/confirm` / `/cancel` — confirmation workflow.
+- `/backup` — local deployment backup.
+- `/restart bot|sub2api` — confirmation-protected service restart.
+- `/debug` — health checks and log summary.
+- `/updatecheck` / `/update` — confirmation-protected Sub2API update workflow.
 
 ### `help` (or no arguments) — Show available actions
 

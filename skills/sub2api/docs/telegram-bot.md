@@ -5,44 +5,60 @@
 ## Files
 
 - `telegram-bot.py` — Telegram polling bot with Chinese command menu.
-- `sub2api-bot.env.example` — environment configuration example.
 
 ## Sensitive Data
 
-Do not commit real values. Replace placeholders at deployment time:
+Do not commit real values. Replace placeholders at deployment time through environment variables or a deployment-local secrets JSON file:
 
-- `<your-sub2api-host>`
-- `<admin@example.com>`
-- `<admin-password>`
-- `<telegram-bot-token>`
-- `<telegram-chat-id>`
-- `<proxy-host>` / `<proxy-port>`
+- `SUB2API_BASE_URL`
+- `SUB2API_ADMIN_EMAIL`
+- `SUB2API_ADMIN_PASSWORD_B64`
+- `TELEGRAM_BOT_TOKEN`
+- `SUB2API_BOT_ALLOWED_CHAT_IDS`
+- `SUB2API_BOT_SECRETS_FILE`
+- `SUB2API_DB_NAME` / `SUB2API_DB_USER`
+- `SUB2API_DEFAULT_PROXY_ID`
+- `SUB2API_UPDATER_SCRIPT`
 
+## Commands
+
+- `/help` — show help.
+- `/status` — combined status, usage, limits and balance.
+- `/accounts` — account list and routing state.
+- `/models` — model mappings and recently requested models.
+- `/channels` — channel and group overview.
+- `/tokens` — API token quota and usage, with keys masked.
+- `/importhelp` — account file import instructions.
+- `/pending` — show pending confirmation-protected operation.
+- `/confirm <code>` — execute pending operation.
+- `/cancel` — cancel pending operation.
+- `/backup` — create a local backup.
+- `/restart bot|sub2api` — restart a service after confirmation.
+- `/debug` — health checks and log summary.
+- `/updatecheck` — check whether Sub2API has a newer version.
+- `/update` — update Sub2API after confirmation.
 
 ## Account Import
 
-Send a `.json` or `.txt` file to the bot. The file may contain one account object or an array.
+Send a `.json` or `.txt` account file to the bot. The file may contain one account object, an array, or an object wrapping an `accounts`, `items`, `data`, or `list` array.
 
-Supported fields:
+Supported fields include:
 
-- `name`
-- `platform` / `provider`: `openai`, `anthropic`, `gemini`
-- `group` / `group_name`
-- `type`
+- `name`, `account_name`, `label`, `email`
+- `platform`, `provider`, `service`
+- `group`, `group_name`, `groupName`
+- `type`, `account_type`, `auth_type`
 - `credentials`
 - `api_key`, `key`, `access_token`, `refresh_token`, `base_url`
-- `priority`
-- `concurrency`
+- `priority`, `concurrency`, `proxy_id`
 
-Imported accounts default to `schedulable=false`. Use `/enable <account_id>` after checking the report.
+Imported accounts default to `schedulable=false`. The bot masks secret values and reports credential field names only.
 
 ## Control Safety
 
 The following commands generate a confirmation code instead of running immediately:
 
-- `/enable <account_id>`
-- `/disable <account_id>`
 - `/restart bot|sub2api`
-- `/setcron 15m|30m|1h`
+- `/update`
 
 Use `/confirm <code>` within 5 minutes or `/cancel`.
