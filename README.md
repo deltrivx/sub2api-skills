@@ -70,7 +70,7 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/cancel`：取消待确认操作
 - `/restart bot|sub2api`：重启服务
 - `/update`：检查更新，有更新再确认
-- `/checkoauth`：检测 OpenAI 分组 OAuth 账号；发现失效账号后用按钮选择软删除/硬删除，并进行二次确认
+- `/checkaccounts`：检测全部账号可用性；发现失效账号后用按钮选择软删除/硬删除，并进行二次确认
 
 ## 五、账号 JSON 导入格式
 
