@@ -8,7 +8,7 @@ PENDING_FILE = os.environ.get("SUB2API_BOT_PENDING_FILE", "/tmp/sub2api_bot_pend
 IMPORT_DIR = os.environ.get("SUB2API_BOT_IMPORT_DIR", "/tmp/sub2api_bot_imports")
 IMPORT_MAX_FILE_BYTES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_FILE_BYTES", str(2*1024*1024)))
 IMPORT_MAX_ARCHIVE_BYTES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_ARCHIVE_BYTES", str(10*1024*1024)))
-IMPORT_MAX_ARCHIVE_FILES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_ARCHIVE_FILES", "30"))
+IMPORT_MAX_ARCHIVE_FILES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_ARCHIVE_FILES", "500"))
 IMPORT_MAX_EXTRACT_BYTES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_EXTRACT_BYTES", str(20*1024*1024)))
 LOG_PREFIX = "[sub2api-bot]"
 AUTH_HEADER = "Author" + "ization"
@@ -22,7 +22,7 @@ COMMANDS = {
     "/models": "模型与映射信息",
     "/channels": "渠道与分组概览",
     "/tokens": "API 令牌列表（脱敏）",
-    "/importhelp": "账号文件导入说明",
+    "/importhelp": "账号文件/链接/压缩包导入说明",
     "/pending": "查看待确认操作",
     "/confirm": "确认执行控制操作",
     "/cancel": "取消待确认操作",
@@ -30,6 +30,7 @@ COMMANDS = {
     "/restart": "重启：/restart bot|sub2api",
     "/debug": "健康检查与日志摘要",
     "/update": "检查更新",
+    "/checkoauth": "检测 OpenAI 分组 OAuth 账号",
 }
 
 def log(*args):
@@ -426,6 +427,8 @@ def cmd_confirm(text):
     if not p: return "没有可确认的操作，或确认码已过期。"
     if parts[1].strip() != p.get("code"):
         return "确认码不匹配。"
+    if p.get("kind") == "oauth_cleanup" and p.get("stage") == "await_first_confirm":
+        return cmd_oauth_cleanup_first_confirm(p)
     command = p.get("command") or ""
     summary = p.get("summary") or ""
     pending_clear()
@@ -721,6 +724,188 @@ def handle_document_message(msg):
     return "\n".join(lines)
 
 
+def oauth_candidate_sql():
+    return """SELECT DISTINCT a.id,a.name
+FROM accounts a
+JOIN account_groups ag ON ag.account_id=a.id
+JOIN groups g ON g.id=ag.group_id
+WHERE a.deleted_at IS NULL
+  AND a.platform='openai'
+  AND a.type='oauth'
+  AND (lower(g.name)='openai' OR lower(g.platform)='openai')
+ORDER BY a.id;"""
+
+def oauth_candidate_ids():
+    out=psql(oauth_candidate_sql())
+    items=[]
+    for line in out.splitlines() if out else []:
+        aid,name=(line.split("|",1)+[""])[:2]
+        sid=safe_int(aid)
+        if sid is not None:
+            items.append((sid,name))
+    return items
+
+def is_bad_oauth_status(status, detail):
+    text=((status or "")+" "+(detail or "")).lower()
+    if status == "可用":
+        return False
+    bad_words=("invalid_grant","expired","expire","unauthorized","401","403","deactivated","revoked","refresh token","unsupported","forbidden","invalid_request","access_denied","测试失败","不可用")
+    return True if any(x in text for x in bad_words) else status != "可用"
+
+def cleanup_pending_load():
+    p=pending_load()
+    if p and p.get("kind") == "oauth_cleanup":
+        return p
+    return None
+
+def cleanup_pending_save(data):
+    pending_save(data)
+
+def cleanup_code(prefix=""):
+    return (prefix + str(int(time.time()))[-6:])[-8:]
+
+def cmd_checkoauth(text="", chat_id=None):
+    candidates=oauth_candidate_ids()
+    if not candidates:
+        return "没有找到 OpenAI 分组 OAuth 账号。"
+    ok=[]; bad=[]
+    lines=["OpenAI OAuth 检测完成："]
+    for aid,name in candidates:
+        status,detail=test_import_account(aid)
+        if is_bad_oauth_status(status, detail):
+            bad.append({"id": aid, "name": name, "status": status, "detail": detail[:220]})
+        else:
+            ok.append(aid)
+    data={"kind":"oauth_cleanup","stage":"checked","created_at":int(time.time()),"expires_at":int(time.time())+600,"bad_account_ids":[x["id"] for x in bad],"bad":bad,"summary":{"checked":len(candidates),"ok":len(ok),"bad":len(bad)}}
+    cleanup_pending_save(data)
+    lines += ["", "检测范围：OpenAI 分组 OAuth 账号", "检测账号："+str(len(candidates)), "可用："+str(len(ok)), "不可用/过期："+str(len(bad))]
+    markup=None
+    if bad:
+        lines += ["", "不可用账号："]
+        for x in bad[:30]:
+            detail=(x.get("detail") or "").replace("\n"," ")[:120]
+            lines.append("- #"+str(x["id"])+" "+x.get("name","")+" | "+x.get("status","")+((" | "+detail) if detail else ""))
+        if len(bad) > 30:
+            lines.append("其余省略："+str(len(bad)-30))
+        markup={"inline_keyboard":[
+            [{"text":"软删除（可恢复）","callback_data":"oauth_cleanup:soft"}],
+            [{"text":"硬删除（不可恢复）","callback_data":"oauth_cleanup:hard"}],
+            [{"text":"取消","callback_data":"cancel:oauth_cleanup"}],
+        ]}
+    else:
+        lines.append("未发现需要清理的不可用 OAuth 账号。")
+    msg="\n".join(lines)
+    if chat_id and markup:
+        send_message(chat_id, msg, markup)
+        return None
+    return msg
+
+def verify_oauth_ids(ids):
+    ids=[int(x) for x in ids if safe_int(x) is not None]
+    if not ids:
+        return []
+    idlist=",".join(str(x) for x in sorted(set(ids)))
+    sql="""SELECT DISTINCT a.id
+FROM accounts a
+JOIN account_groups ag ON ag.account_id=a.id
+JOIN groups g ON g.id=ag.group_id
+WHERE a.deleted_at IS NULL
+  AND a.platform='openai'
+  AND a.type='oauth'
+  AND (lower(g.name)='openai' OR lower(g.platform)='openai')
+  AND a.id IN ("""+idlist+") ORDER BY a.id;"
+    out=psql(sql)
+    return [int(x.strip()) for x in out.splitlines() if x.strip().isdigit()] if out else []
+
+def cmd_cleanoauth(text):
+    parts=text.split()
+    if len(parts) < 2 or parts[1].lower() not in ("soft","hard"):
+        return "用法：/cleanoauth soft 或 /cleanoauth hard。请先执行 /checkoauth。"
+    return cmd_cleanoauth_mode(parts[1].lower(), button=False)
+
+def cmd_cleanoauth_mode(mode, button=False):
+    if mode not in ("soft","hard"):
+        return "未知清理方式。"
+    p=cleanup_pending_load()
+    if not p or p.get("stage") != "checked":
+        return "没有可清理的检测结果，或已过期。请先执行 /checkoauth。"
+    ids=verify_oauth_ids(p.get("bad_account_ids",[]))
+    if not ids:
+        pending_clear()
+        return "没有仍符合条件的不可用 OpenAI OAuth 账号。"
+    code=cleanup_code()
+    p.update({"stage":"await_first_confirm","mode":mode,"code":code,"account_ids":ids,"expires_at":int(time.time())+600})
+    cleanup_pending_save(p)
+    if mode == "soft":
+        summary="准备软删除 "+str(len(ids))+" 个不可用 OpenAI OAuth 账号。\n软删除会关闭调度、置为 inactive、写入 deleted_at，记录可恢复。"
+    else:
+        summary="⚠️ 准备硬删除 "+str(len(ids))+" 个不可用 OpenAI OAuth 账号。\n硬删除会删除账号及分组绑定记录，不可恢复。"
+    text=summary
+    if button:
+        return text, {"inline_keyboard":[
+            [{"text":"确认继续","callback_data":"oauth_first:"+code}],
+            [{"text":"取消","callback_data":"cancel:oauth_cleanup"}],
+        ]}
+    return text+"\n第一次确认：/confirm "+code+"\n取消：/cancel"
+
+def oauth_second_confirm_markup():
+    p=cleanup_pending_load()
+    if not p or p.get("stage") != "await_second_confirm":
+        return None
+    mode=p.get("mode")
+    code=p.get("second_code") or ""
+    if mode == "soft":
+        cb="oauth_second:soft:"+code
+        text="最终确认软删除"
+    else:
+        cb="oauth_second:hard:"+code
+        text="最终确认硬删除"
+    return {"inline_keyboard":[
+        [{"text":text,"callback_data":cb}],
+        [{"text":"取消","callback_data":"cancel:oauth_cleanup"}],
+    ]}
+
+def cmd_oauth_cleanup_first_confirm(p):
+    mode=p.get("mode")
+    ids=verify_oauth_ids(p.get("account_ids") or p.get("bad_account_ids",[]))
+    if not ids:
+        pending_clear()
+        return "没有仍符合条件的账号，已取消。"
+    second=cleanup_code("s" if mode=="soft" else "h")
+    p.update({"stage":"await_second_confirm","second_code":second,"account_ids":ids,"expires_at":int(time.time())+600})
+    cleanup_pending_save(p)
+    if mode == "soft":
+        return "二次确认软删除：\n即将软删除 "+str(len(ids))+" 个不可用 OpenAI OAuth 账号。"
+    return "⚠️ 二次确认硬删除：\n即将硬删除 "+str(len(ids))+" 个不可用 OpenAI OAuth 账号，该操作不可恢复。"
+
+def cmd_confirm_oauth_cleanup(text, mode):
+    parts=text.split()
+    if len(parts)<2:
+        return "缺少二次确认码。"
+    p=cleanup_pending_load()
+    if not p or p.get("stage") != "await_second_confirm" or p.get("mode") != mode:
+        return "没有对应的二次确认操作，或已过期。"
+    if parts[1].strip() != p.get("second_code"):
+        return "二次确认码不匹配。"
+    ids=verify_oauth_ids(p.get("account_ids",[]))
+    pending_clear()
+    if not ids:
+        return "没有仍符合条件的账号，未执行。"
+    idlist=",".join(str(x) for x in ids)
+    if mode == "soft":
+        sql="UPDATE accounts SET status='inactive', schedulable=false, deleted_at=now(), updated_at=now(), error_message=COALESCE(error_message,'disabled by OpenAI OAuth cleanup') WHERE deleted_at IS NULL AND platform='openai' AND type='oauth' AND id IN ("+idlist+");"
+        psql(sql)
+        return "已软删除不可用 OpenAI OAuth 账号："+str(len(ids))+" 个。\n正常账号未处理。"
+    # Hard delete: remove common child bindings first. Keep best-effort for optional tables.
+    psql("DELETE FROM account_groups WHERE account_id IN ("+idlist+");")
+    try:
+        psql("DELETE FROM scheduler_outbox WHERE account_id IN ("+idlist+");")
+    except Exception:
+        pass
+    psql("DELETE FROM accounts WHERE platform='openai' AND type='oauth' AND id IN ("+idlist+");")
+    return "已硬删除不可用 OpenAI OAuth 账号："+str(len(ids))+" 个。\n正常账号未处理。"
+
+
 def update_script():
     return os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py")
 
@@ -763,6 +948,10 @@ def handle_command(text, chat_id="0"):
         if cmd == "/restart": return cmd_restart(text)
         if cmd == "/debug": return cmd_debug()
         if cmd == "/update": return cmd_update(chat_id)
+        if cmd == "/checkoauth": return cmd_checkoauth(text, chat_id)
+        if cmd == "/cleanoauth": return cmd_cleanoauth(text)
+        if cmd in ("/confirm_soft_delete", "/confirm-soft-delete"): return cmd_confirm_oauth_cleanup(text, "soft")
+        if cmd in ("/confirm_hard_delete", "/confirm-hard-delete"): return cmd_confirm_oauth_cleanup(text, "hard")
         return "未知命令。\n\n" + cmd_help()
     except Exception as e:
         return "执行失败：" + type(e).__name__ + ": " + str(e)[:300]
@@ -784,14 +973,8 @@ def setup_bot_menu():
     scopes = [
         {"type": "default"},
         {"type": "all_private_chats"},
-    ] + [{"type": "chat", "chat_id": chat_id} for chat_id in ALLOWED_CHAT_IDS]
-    # Clear old commands first; stale commands can remain in scoped Telegram menus.
-    for scope in scopes:
-        for payload in ({"scope": scope}, {"scope": scope, "language_code": "zh"}):
-            try:
-                tg_call("deleteMyCommands", payload)
-            except Exception as e:
-                log("deleteMyCommands failed", scope, type(e).__name__, str(e)[:120])
+    ] + [{"type": "chat", "chat_id": int(chat_id) if str(chat_id).isdigit() else chat_id} for chat_id in ALLOWED_CHAT_IDS]
+    # Do not clear commands on every start; overwrite them to avoid empty menus when network hiccups.
     for scope in scopes:
         for payload in ({"commands": commands, "scope": scope}, {"commands": commands, "scope": scope, "language_code": "zh"}):
             try:
@@ -802,7 +985,7 @@ def setup_bot_menu():
     tg_call("setMyShortDescription", {"short_description": "Sub2API 管理助手"})
     tg_call("setChatMenuButton", {"menu_button": {"type": "commands"}})
     for chat_id in ALLOWED_CHAT_IDS:
-        tg_call("setChatMenuButton", {"chat_id": chat_id, "menu_button": {"type": "commands"}})
+        tg_call("setChatMenuButton", {"chat_id": int(chat_id) if str(chat_id).isdigit() else chat_id, "menu_button": {"type": "commands"}})
 
 def main():
     setup_bot_menu()
@@ -825,7 +1008,27 @@ def main():
                     if chat_id not in ALLOWED_CHAT_IDS:
                         log("ignore unauthorized callback", chat_id)
                         continue
-                    if data.startswith("confirm:"):
+                    if data.startswith("oauth_cleanup:"):
+                        mode=data.split(":",1)[1]
+                        answer_callback_query(cb_id, "已选择" + ("软删除" if mode=="soft" else "硬删除"))
+                        res=cmd_cleanoauth_mode(mode, button=True)
+                        if isinstance(res, tuple):
+                            send_message(chat_id, res[0], res[1])
+                        else:
+                            send_message(chat_id, res)
+                    elif data.startswith("oauth_first:"):
+                        code=data.split(":",1)[1]
+                        answer_callback_query(cb_id, "已确认，等待二次确认")
+                        reply=cmd_confirm("/confirm " + code)
+                        send_message(chat_id, reply, oauth_second_confirm_markup())
+                    elif data.startswith("oauth_second:"):
+                        _,mode,code=data.split(":",2)
+                        answer_callback_query(cb_id, "开始执行")
+                        if mode == "soft":
+                            send_message(chat_id, cmd_confirm_oauth_cleanup("/confirm_soft_delete " + code, "soft"))
+                        else:
+                            send_message(chat_id, cmd_confirm_oauth_cleanup("/confirm_hard_delete " + code, "hard"))
+                    elif data.startswith("confirm:"):
                         code = data.split(":", 1)[1]
                         answer_callback_query(cb_id, "开始更新")
                         send_message(chat_id, cmd_confirm("/confirm " + code))
@@ -847,6 +1050,9 @@ def main():
                     send_message(chat_id, "收到文件，开始解压并导入~")
                     reply = handle_document_message(msg)
                 elif text.startswith("/"):
+                    cmd = text.strip().split()[0].split("@", 1)[0].lower()
+                    if cmd == "/checkoauth":
+                        send_message(chat_id, "收到指令，开始检测失效 OAuth 账号~")
                     reply = handle_command(text, chat_id)
                 if reply:
                     send_message(chat_id, reply)

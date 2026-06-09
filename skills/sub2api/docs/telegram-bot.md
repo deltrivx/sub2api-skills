@@ -66,3 +66,10 @@ Use `/confirm <code>` within 5 minutes or `/cancel`.
 ## Archive import safety
 
 The bot can accept `.zip`, `.tar`, `.tar.gz`, and `.tgz` archives. It scans archives in memory, imports only `.json` / `.txt` account files, rejects path traversal entries, and enforces limits for archive size, file count, per-file size, and total extracted bytes.
+
+
+## OpenAI OAuth cleanup
+
+The bot template includes `/checkoauth` to test OpenAI-group OAuth accounts only. It sends an immediate acknowledgement, checks for expired or unusable OAuth accounts, and then shows inline buttons for soft delete, hard delete, or cancel. Both soft and hard delete paths require two button confirmations. The command does not scan API-key accounts, non-OpenAI accounts, or accounts outside the OpenAI group.
+
+Soft delete disables scheduling, marks the account inactive, and writes `deleted_at`. Hard delete removes account/group bindings and then deletes the account record. Review the SQL against your deployment schema before enabling hard delete in production.
