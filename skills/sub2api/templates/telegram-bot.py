@@ -1036,7 +1036,15 @@ def main():
                     continue
                 reply = None
                 if msg.get("document"):
-                    send_message(chat_id, "收到文件，开始解压并导入~")
+                    doc = msg.get("document") or {}
+                    file_name = doc.get("file_name") or ""
+                    mime_type = (doc.get("mime_type") or "").lower()
+                    if is_import_archive_file(file_name, mime_type):
+                        send_message(chat_id, "收到压缩文件，开始解压并导入~")
+                    elif is_import_data_file(file_name, mime_type):
+                        send_message(chat_id, "收到账号文件，开始导入~")
+                    else:
+                        send_message(chat_id, "收到文件，正在检查格式~")
                     reply = handle_document_message(msg)
                 elif text.startswith("/"):
                     cmd = text.strip().split()[0].split("@", 1)[0].lower()
