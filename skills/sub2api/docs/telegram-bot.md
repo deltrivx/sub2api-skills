@@ -61,3 +61,8 @@ The following commands generate a confirmation code instead of running immediate
 - `/update`
 
 Use `/confirm <code>` within 5 minutes or `/cancel`.
+
+
+## Archive import safety
+
+The bot can accept `.zip`, `.tar`, `.tar.gz`, and `.tgz` archives. It scans archives in memory, imports only `.json` / `.txt` account files, rejects path traversal entries, and enforces limits for archive size, file count, per-file size, and total extracted bytes.

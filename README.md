@@ -58,7 +58,7 @@ export SUB2API_USER_ID="<your-user-id>"
 ### 导入与维护
 
 - `/importhelp`：查看账号文件导入说明
-- 发送 `.json` / `.txt` 账号文件：自动分析、创建/匹配分组、导入账号并报告账号信息
+- 发送 `.json` / `.txt` 账号文件，或 `.zip` / `.tar` / `.tar.gz` / `.tgz` 压缩包：自动安全解压、扫描账号文件、创建/匹配分组、导入账号并报告账号信息
 - `/backup`：生成本地配置备份
 
 ### 带确认保护的控制命令
@@ -100,6 +100,7 @@ export SUB2API_USER_ID="<your-user-id>"
 导入策略：
 
 - 自动识别 `platform/provider/service/type`
+- 压缩包只处理其中的 `.json` / `.txt`，自动忽略其他文件，并限制文件数量、单文件大小和解压总量
 - 自动创建或匹配分组
 - 自动写入 `accounts` 与 `account_groups`
 - 自动写入 `scheduler_outbox`

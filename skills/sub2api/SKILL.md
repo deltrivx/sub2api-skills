@@ -51,7 +51,7 @@ Template capabilities include:
 
 - Chinese Telegram command menu.
 - Comprehensive Sub2API status, account routing, usage, limits, balance, model, channel and token diagnostics.
-- JSON/TXT account-file import with automatic group matching/creation and account testing.
+- JSON/TXT account-file import, plus safe ZIP/TAR/TGZ archive extraction, with automatic group matching/creation and account testing.
 - Safe reporting of imported account metadata without printing secrets.
 - Confirmation-code guarded restart/update controls.
 - Local backup and debug/log summary commands.

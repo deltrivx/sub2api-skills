@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-import json, os, time, urllib.request, urllib.error, pathlib, subprocess, shlex, tempfile, zipfile, re
+import json, os, time, urllib.request, urllib.error, pathlib, subprocess, shlex, tempfile, zipfile, tarfile, re
 
 SUB2API_URL = os.environ.get("SUB2API_BASE_URL", "https://<your-sub2api-host>").rstrip("/")
 SECRETS_FILE = os.environ.get("SUB2API_BOT_SECRETS_FILE", "/etc/sub2api-bot-secrets.json")
 OFFSET_FILE = os.environ.get("SUB2API_BOT_OFFSET_FILE", "/tmp/sub2api_telegram_bot_offset.txt")
 PENDING_FILE = os.environ.get("SUB2API_BOT_PENDING_FILE", "/tmp/sub2api_bot_pending_action.json")
 IMPORT_DIR = os.environ.get("SUB2API_BOT_IMPORT_DIR", "/tmp/sub2api_bot_imports")
+IMPORT_MAX_FILE_BYTES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_FILE_BYTES", str(2*1024*1024)))
+IMPORT_MAX_ARCHIVE_BYTES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_ARCHIVE_BYTES", str(10*1024*1024)))
+IMPORT_MAX_ARCHIVE_FILES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_ARCHIVE_FILES", "30"))
+IMPORT_MAX_EXTRACT_BYTES = int(os.environ.get("SUB2API_BOT_IMPORT_MAX_EXTRACT_BYTES", str(20*1024*1024)))
 LOG_PREFIX = "[sub2api-bot]"
 AUTH_HEADER = "Author" + "ization"
 BEARER_PREFIX = "Be" + "arer "
@@ -443,7 +447,7 @@ def cmd_restart(text):
 
 
 def cmd_importhelp():
-    return "账号文件导入说明：\n- 直接给机器人发送 .json/.txt 文件。\n- 支持单个对象、数组，或 accounts/items/data/list 包裹数组。\n- 会自动识别 openai/anthropic/gemini，Codex/ChatGPT OAuth 会按 OpenAI OAuth 导入。\n- 会优先复用已有同平台分组，例如 OpenAI/Anthropic/Google。\n- 敏感字段不会在回复中明文显示；导入默认 schedulable=false，后续可按部署策略启用调度。"
+    return "账号文件导入说明：\n- 直接给机器人发送 .json/.txt 文件，或 .zip/.tar/.tar.gz/.tgz 压缩包。\n- 压缩包会自动安全解压，只导入其中的 .json/.txt 文件，忽略其他文件。\n- 支持单个对象、数组，或 accounts/items/data/list 包裹数组。\n- 会自动识别 openai/anthropic/gemini，Codex/ChatGPT OAuth 会按 OpenAI OAuth 导入。\n- 会优先复用已有同平台分组，例如 OpenAI/Anthropic/Google。\n- 敏感字段不会在回复中明文显示；导入默认 schedulable=false，后续可按部署策略启用调度。"
 
 def detect_import_platform(item):
     candidates=[]
@@ -562,6 +566,91 @@ def parse_import_payload(raw):
     if isinstance(data, list): return data
     return []
 
+def is_import_data_file(name, mime_type=""):
+    low=(name or "").lower()
+    mt=(mime_type or "").lower()
+    return low.endswith((".json", ".txt")) or mt in ("application/json", "text/plain") or "+json" in mt
+
+def is_import_archive_file(name, mime_type=""):
+    low=(name or "").lower()
+    mt=(mime_type or "").lower()
+    return low.endswith((".zip", ".tar", ".tar.gz", ".tgz")) or mt in ("application/zip", "application/x-zip-compressed", "application/x-tar", "application/gzip", "application/x-gzip")
+
+def safe_archive_member_name(name):
+    if not name:
+        return None
+    # Normalize ZIP/TAR internal paths without writing them to disk.
+    pure=pathlib.PurePosixPath(str(name).replace('\\','/'))
+    if pure.is_absolute() or any(part in ("", ".", "..") for part in pure.parts):
+        return None
+    return pure.name
+
+def extract_import_files_from_archive(raw, file_name):
+    if len(raw) > IMPORT_MAX_ARCHIVE_BYTES:
+        raise ValueError("压缩包超过大小限制")
+    entries=[]
+    total=0
+    low=(file_name or "").lower()
+    bio=tempfile.SpooledTemporaryFile(max_size=IMPORT_MAX_ARCHIVE_BYTES)
+    bio.write(raw); bio.seek(0)
+    if low.endswith(".zip") or zipfile.is_zipfile(bio):
+        bio.seek(0)
+        with zipfile.ZipFile(bio) as zf:
+            infos=[x for x in zf.infolist() if not x.is_dir()]
+            if len(infos) > IMPORT_MAX_ARCHIVE_FILES:
+                raise ValueError("压缩包文件数量超过限制")
+            for info in infos:
+                base=safe_archive_member_name(info.filename)
+                if not base or not is_import_data_file(base):
+                    continue
+                if info.file_size > IMPORT_MAX_FILE_BYTES:
+                    entries.append((base, None, "文件超过单个导入限制"))
+                    continue
+                total += info.file_size
+                if total > IMPORT_MAX_EXTRACT_BYTES:
+                    raise ValueError("压缩包解压总量超过限制")
+                entries.append((base, zf.read(info), None))
+        return entries
+    bio.seek(0)
+    mode='r:gz' if low.endswith((".tar.gz", ".tgz")) else 'r:*'
+    with tarfile.open(fileobj=bio, mode=mode) as tf:
+        members=[m for m in tf.getmembers() if m.isfile()]
+        if len(members) > IMPORT_MAX_ARCHIVE_FILES:
+            raise ValueError("压缩包文件数量超过限制")
+        for m in members:
+            base=safe_archive_member_name(m.name)
+            if not base or not is_import_data_file(base):
+                continue
+            if m.size > IMPORT_MAX_FILE_BYTES:
+                entries.append((base, None, "文件超过单个导入限制"))
+                continue
+            total += m.size
+            if total > IMPORT_MAX_EXTRACT_BYTES:
+                raise ValueError("压缩包解压总量超过限制")
+            f=tf.extractfile(m)
+            if f:
+                entries.append((base, f.read(), None))
+    return entries
+
+def import_items_from_raw(raw, source_name):
+    try:
+        items=parse_import_payload(raw)
+    except Exception as e:
+        return [], [source_name+" 解析失败："+type(e).__name__+": "+str(e)[:160]]
+    imported=[]; skipped=[]
+    for i,item in enumerate(items,1):
+        acc=normalize_import_item(item,i)
+        if not acc or not acc.get("credentials"):
+            skipped.append(source_name+" 第 "+str(i)+" 项：缺少 credentials/api_key/access_token 等凭据字段")
+            continue
+        try:
+            aid,gid=insert_import_account(acc)
+            status,detail=test_import_account(aid)
+            imported.append((source_name,aid,gid,acc,status,detail))
+        except Exception as e:
+            skipped.append(source_name+" 第 "+str(i)+" 项导入失败："+str(e)[:180])
+    return imported, skipped
+
 def tg_download_file(file_id):
     meta=tg_call("getFile", {"file_id": file_id}, timeout=30)
     path=meta.get("result",{}).get("file_path")
@@ -575,41 +664,59 @@ def handle_document_message(msg):
     doc=msg.get("document") or {}
     file_name=doc.get("file_name") or "account.json"
     size=int(doc.get("file_size") or 0)
-    if size > 2*1024*1024:
-        return "文件太大，账号导入文件请控制在 2MB 内。"
     mime_type = (doc.get("mime_type") or "").lower()
-    if not (any(file_name.lower().endswith(ext) for ext in (".json",".txt")) or mime_type in ("application/json", "text/plain") or "+json" in mime_type):
-        return "只处理 .json / .txt 账号文件。发送 /importhelp 查看格式说明。"
+    is_archive=is_import_archive_file(file_name, mime_type)
+    is_data=is_import_data_file(file_name, mime_type)
+    if is_archive:
+        if size > IMPORT_MAX_ARCHIVE_BYTES:
+            return "压缩包太大，请控制在 "+str(IMPORT_MAX_ARCHIVE_BYTES//1024//1024)+"MB 内。"
+    elif is_data:
+        if size > IMPORT_MAX_FILE_BYTES:
+            return "文件太大，账号导入文件请控制在 "+str(IMPORT_MAX_FILE_BYTES//1024//1024)+"MB 内。"
+    else:
+        return "只处理 .json/.txt 账号文件，或 .zip/.tar/.tar.gz/.tgz 压缩包。发送 /importhelp 查看格式说明。"
     raw=tg_download_file(doc.get("file_id"))
     pathlib.Path(IMPORT_DIR).mkdir(parents=True, exist_ok=True)
     save_path=pathlib.Path(IMPORT_DIR)/(time.strftime("%Y%m%d-%H%M%S-")+file_name.replace('/','_'))
     save_path.write_bytes(raw)
-    try:
-        items=parse_import_payload(raw)
-    except Exception as e:
-        return "账号文件解析失败："+type(e).__name__+": "+str(e)[:200]
-    imported=[]; skipped=[]
-    for i,item in enumerate(items,1):
-        acc=normalize_import_item(item,i)
-        if not acc or not acc.get("credentials"):
-            skipped.append("第 "+str(i)+" 项：缺少 credentials/api_key/access_token 等凭据字段")
-            continue
+
+    imported=[]; skipped=[]; sources=[]
+    if is_archive:
         try:
-            aid,gid=insert_import_account(acc)
-            status,detail=test_import_account(aid)
-            imported.append((aid,gid,acc,status,detail))
+            extracted=extract_import_files_from_archive(raw, file_name)
         except Exception as e:
-            skipped.append("第 "+str(i)+" 项导入失败："+str(e)[:180])
-    lines=["账号文件分析完成："+file_name, "导入成功："+str(len(imported))+"，跳过/失败："+str(len(skipped))]
-    for aid,gid,acc,status,detail in imported[:20]:
+            return "压缩包解压失败："+type(e).__name__+": "+str(e)[:200]
+        if not extracted:
+            return "压缩包内未找到 .json/.txt 账号文件。"
+        for inner_name, inner_raw, err in extracted:
+            sources.append(inner_name)
+            if err:
+                skipped.append(inner_name+"："+err)
+                continue
+            pathlib.Path(IMPORT_DIR, time.strftime("%Y%m%d-%H%M%S-")+file_name.replace('/','_')+"-"+inner_name.replace('/','_')).write_bytes(inner_raw)
+            ok,bad=import_items_from_raw(inner_raw, inner_name)
+            imported.extend(ok); skipped.extend(bad)
+    else:
+        sources.append(file_name)
+        ok,bad=import_items_from_raw(raw, file_name)
+        imported.extend(ok); skipped.extend(bad)
+
+    title="压缩包分析完成："+file_name if is_archive else "账号文件分析完成："+file_name
+    lines=[title, "识别文件："+str(len(sources)), "导入成功："+str(len(imported))+"，跳过/失败："+str(len(skipped))]
+    for source,aid,gid,acc,status,detail in imported[:20]:
         cred_keys=','.join(sorted([str(k) for k in acc['credentials'].keys()]))
         proxy_text=(" | 代理:#"+str(acc['proxy_id'])) if acc.get('proxy_id') is not None else " | 代理:无"
         group_text=acc['group']+"(#"+str(gid)+")"+(" 新建" if acc.get('group_created') else " 复用")
-        lines.append(f"- #{aid} {acc['name']} | {acc['platform']}/{acc['type']} | 分组:{group_text}{proxy_text} | 调度:关 | 测试:{status} | 凭据字段:{cred_keys}")
+        source_text=(" | 来源:"+source) if is_archive else ""
+        lines.append(f"- #{aid} {acc['name']} | {acc['platform']}/{acc['type']} | 分组:{group_text}{proxy_text} | 调度:关 | 测试:{status} | 凭据字段:{cred_keys}{source_text}")
         if status != "可用": lines.append("  测试详情："+detail)
+    if len(imported) > 20:
+        lines.append("其余成功项已省略："+str(len(imported)-20))
     if skipped:
         lines.append("失败/跳过：")
         lines.extend(["- "+x for x in skipped[:10]])
+        if len(skipped) > 10:
+            lines.append("其余失败项已省略："+str(len(skipped)-10))
     lines.append("安全提示：导入账号默认调度关闭；只有测试可用后才建议按部署策略开启调度。")
     return "\n".join(lines)
 
