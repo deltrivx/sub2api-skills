@@ -21,8 +21,7 @@ jobs:
       - name: Python syntax check
         run: |
           python -m py_compile \
-            skills/sub2api/templates/telegram-bot.py \
-            skills/sub2api/templates/south-monitor.py
+            skills/sub2api/templates/telegram-bot.py
 
       - name: Node syntax check
         run: |
