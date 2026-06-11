@@ -25,6 +25,7 @@ jobs:
 
       - name: Node syntax check
         run: |
+          shopt -s nullglob
           for file in skills/sub2api/scripts/*.js; do
             node --check "$file"
           done

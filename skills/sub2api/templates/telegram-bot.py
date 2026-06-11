@@ -85,9 +85,24 @@ def message_text_with_urls(msg):
 def run(cmd, timeout=20):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
 
+def env_first(*names, default=""):
+    for name in names:
+        value = os.environ.get(name)
+        if value not in (None, ""):
+            return value
+    return default
+
 def psql(sql, timeout=20):
-    cmd = "psql -d " + shlex.quote(os.environ.get("SUB2API_DB_NAME", "sub2api")) + " -t -A -F '|' -c " + shlex.quote(sql)
-    proc = subprocess.run(["su", "-", os.environ.get("SUB2API_DB_USER", "postgres"), "-c", cmd], capture_output=True, text=True, timeout=timeout)
+    host = env_first("SUB2API_DB_HOST", "DATABASE_HOST", default="127.0.0.1")
+    port = env_first("SUB2API_DB_PORT", "DATABASE_PORT", default="5432")
+    user = env_first("SUB2API_DB_USER", "DATABASE_USER", default="postgres")
+    dbname = env_first("SUB2API_DB_NAME", "DATABASE_DBNAME", default="sub2api")
+    password = env_first("SUB2API_DB_PASSWORD", "DATABASE_PASSWORD")
+    env = os.environ.copy()
+    if password:
+        env["PGPASSWORD"] = password
+    cmd = ["psql", "-h", host, "-p", str(port), "-U", user, "-d", dbname, "-t", "-A", "-F", "|", "-c", sql]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip()[:300])
     return proc.stdout.strip()
@@ -232,12 +247,17 @@ def cmd_status():
 
 def cmd_health():
     checks = []
-    for name, cmd in [
-        ("sub2api 服务", "systemctl is-active sub2api"),
-        ("Telegram Bot 服务", "systemctl is-active sub2api-telegram-bot"),
-    ]:
-        r = run(cmd, timeout=8)
-        checks.append(f"- {name}: {r.stdout.strip() or r.stderr.strip() or '未知'}")
+    checks.append("- Bot 进程: running")
+    docker_socket = pathlib.Path(os.environ.get("DOCKER_HOST_SOCKET", "/var/run/docker.sock"))
+    if docker_socket.exists():
+        for name, container in [
+            ("sub2api 容器", os.environ.get("SUB2API_CONTAINER_NAME", "sub2api")),
+            ("Bot 容器", os.environ.get("SUB2API_BOT_CONTAINER_NAME", "sub2api-skill")),
+        ]:
+            r = run("docker inspect -f '{{.State.Status}}' " + shlex.quote(container), timeout=8)
+            checks.append(f"- {name}: {r.stdout.strip() or r.stderr.strip() or '未知'}")
+    else:
+        checks.append("- Docker 控制: 未挂载 /var/run/docker.sock")
     try:
         psql("SELECT 1;")
         checks.append("- PostgreSQL: 正常")
@@ -365,8 +385,10 @@ def cmd_top():
 
 def cmd_backup():
     ts = time.strftime("%Y%m%d-%H%M%S")
-    dest = f"/root/sub2api_bot_backup_{ts}.tgz"
-    targets = os.environ.get("SUB2API_BOT_BACKUP_TARGETS", "/etc/sub2api-bot-secrets.json /opt/sub2api-telegram-bot.py")
+    backup_dir = pathlib.Path(os.environ.get("SUB2API_BOT_BACKUP_DIR", "/data/backups"))
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    dest = str(backup_dir / f"sub2api_bot_backup_{ts}.tgz")
+    targets = os.environ.get("SUB2API_BOT_BACKUP_TARGETS", "/config /data")
     cmd = "tar --warning=no-file-changed --ignore-failed-read -czf " + shlex.quote(dest) + " " + targets + " 2>/dev/null"
     run(cmd, timeout=30)
     if pathlib.Path(dest).exists():
@@ -443,9 +465,10 @@ def cmd_restart(text):
     if len(parts)<2: return "用法：/restart bot 或 /restart sub2api"
     target=parts[1].lower()
     if target in ("bot","telegram","telegram-bot"):
-        return make_confirm("restart", "重启 Telegram Bot 服务", "systemctl restart sub2api-telegram-bot && systemctl is-active sub2api-telegram-bot")
+        return make_confirm("restart", "重启 Telegram Bot 容器", "kill -TERM 1")
     if target in ("sub2api","api"):
-        return make_confirm("restart", "重启 sub2api 服务", "systemctl restart sub2api && systemctl is-active sub2api")
+        container = os.environ.get("SUB2API_CONTAINER_NAME", "sub2api")
+        return make_confirm("restart", "重启 sub2api 容器", "docker restart " + shlex.quote(container))
     return "不支持的服务。可选：bot / sub2api"
 
 

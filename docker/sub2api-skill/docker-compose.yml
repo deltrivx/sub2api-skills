@@ -1,0 +1,18 @@
+services:
+  sub2api-skill:
+    image: ghcr.io/deltrivx/sub2api-skill:latest
+    container_name: sub2api-skill
+    restart: always
+    network_mode: host
+    env_file:
+      - ./.env
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      - /vol2/1000/Docker/sub2api/data:/sub2api-data:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '3'
