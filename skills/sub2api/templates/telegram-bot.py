@@ -1011,7 +1011,13 @@ def update_script():
     return os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py")
 
 def cmd_update(chat_id=None):
-    if docker_enabled() and pathlib.Path(docker_compose_dir()).exists():
+    is_docker = docker_enabled() and pathlib.Path(docker_compose_dir()).exists()
+    if chat_id:
+        if is_docker:
+            send_message(chat_id, "正在检测 Docker 版 Sub2API 镜像更新，请稍等…")
+        else:
+            send_message(chat_id, "正在检测系统级 Sub2API 更新，请稍等…")
+    if is_docker:
         image = docker_sub2api_image()
         try:
             local = docker_local_digest(image)
