@@ -99,37 +99,32 @@ def docker_compose_cmd():
 
 def docker_local_digest(image=None):
     image = image or docker_sub2api_image()
-    r = run("docker image inspect " + shlex.quote(image) + " --format '{{json .RepoDigests}}'", timeout=20)
+    r = run("docker image inspect " + shlex.quote(image) + " --format '{{.Id}}'", timeout=20)
     if r.returncode != 0:
         return ""
-    try:
-        digests = json.loads(r.stdout.strip())
-    except Exception:
-        return ""
-    for item in digests or []:
-        if "@sha256:" in item:
-            return item.split("@", 1)[1]
-    return ""
+    return r.stdout.strip()
 
 def docker_remote_digest(image=None):
     image = image or docker_sub2api_image()
-    r = run("docker manifest inspect " + shlex.quote(image), timeout=120)
+    r = run("docker manifest inspect -v " + shlex.quote(image), timeout=120)
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout).strip()[-500:] or "docker manifest inspect failed")
     data = json.loads(r.stdout)
-    if isinstance(data, dict) and data.get("manifests"):
-        arch = os.environ.get("SUB2API_IMAGE_ARCH", "amd64")
-        os_name = os.environ.get("SUB2API_IMAGE_OS", "linux")
-        for item in data.get("manifests") or []:
-            platform = item.get("platform") or {}
-            if platform.get("architecture") == arch and platform.get("os") == os_name and item.get("digest"):
-                return item.get("digest")
-        first = data.get("manifests", [{}])[0]
-        return first.get("digest", "")
-    if data.get("config", {}).get("digest"):
-        return data["config"]["digest"]
-    return ""
-
+    items = data if isinstance(data, list) else [data]
+    arch = os.environ.get("SUB2API_IMAGE_ARCH", "amd64")
+    os_name = os.environ.get("SUB2API_IMAGE_OS", "linux")
+    fallback = ""
+    for item in items:
+        descriptor = item.get("Descriptor") or {}
+        platform = descriptor.get("platform") or item.get("platform") or {}
+        schema = item.get("SchemaV2Manifest") or item
+        config = schema.get("config") or {}
+        digest = config.get("digest") or descriptor.get("digest") or item.get("digest") or ""
+        if digest and not fallback:
+            fallback = digest
+        if digest and platform.get("architecture") == arch and platform.get("os") == os_name:
+            return digest
+    return fallback
 def docker_update_command():
     deploy_dir = docker_compose_dir()
     image = docker_sub2api_image()
