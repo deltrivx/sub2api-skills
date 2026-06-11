@@ -1,6 +1,6 @@
 # Sub2API Skills 与 Telegram 运维机器人
 
-这个仓库提供 Sub2API 的助手 Skill，以及一套可选的 Telegram 运维机器人模板，用于查询、诊断、导入账号文件、备份、静默通知和带确认码的低风险运维控制。
+这个仓库提供 Sub2API 的助手 Skill、Telegram 运维机器人模板，以及可选的 Docker sidecar 部署方案。它适合在不修改 Sub2API 官方镜像和官方容器的前提下，为 Sub2API 增加查询、诊断、账号导入、备份、重启和更新等运维能力。
 
 > 安全说明：仓库内所有地址、Token、密码、Chat ID、账号 Key 均使用占位符或环境变量。请不要把真实凭据提交到 GitHub。
 
@@ -38,13 +38,13 @@ export SUB2API_USER_ID="<your-user-id>"
 | `scan-config` | `/sub2api scan-config <file>` | 扫描配置并脱敏展示 |
 | `help` | `/sub2api help <question>` | 查询 Sub2API 使用说明 |
 
-## 四、Telegram 运维机器人模板
+## 四、Telegram 运维机器人
 
 模板位置：
 
 - `skills/sub2api/templates/telegram-bot.py`
 
-机器人菜单支持：
+机器人支持系统级部署和 Docker sidecar 部署。系统级部署适合直接运行在 Sub2API 所在主机；Docker sidecar 部署适合 Docker 版 Sub2API，独立运行在旁路容器中，不修改官方镜像和官方容器。
 
 ### 查询与诊断
 
@@ -68,8 +68,9 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/pending`：查看待确认操作
 - `/confirm <code>`：确认执行
 - `/cancel`：取消待确认操作
-- `/restart bot|sub2api`：重启服务
-- `/update`：检查更新，有更新再确认
+- `/restart`：先弹出 `Bot` / `Sub2API` 选择按钮，再进入确认/取消
+- `/restart bot|sub2api`：直接指定目标并进入确认
+- `/update`：先立即提示正在检测更新；系统级部署走本机 updater，Docker 部署比对官方镜像后再决定是否提示确认/取消
 - `/checkaccounts`：检测全部账号可用性；发现失效账号后用按钮选择软删除/硬删除，并进行二次确认
 
 ## 五、账号 JSON 导入格式
@@ -108,13 +109,15 @@ export SUB2API_USER_ID="<your-user-id>"
 - 默认 `schedulable=false`，确认无误后再按部署策略开启调度
 - 回复中只展示凭据字段名，不展示明文凭据
 
-## 六、部署 Telegram Bot
+## 六、系统级部署 Telegram Bot
 
-1. 复制模板：
+系统级部署适合 Sub2API 以二进制、systemd 或其他主机服务方式运行的环境。
+
+1. 复制模板和环境变量示例：
 
 ```bash
 sudo install -m 700 skills/sub2api/templates/telegram-bot.py /opt/sub2api-telegram-bot.py
-sudo install -m 600 skills/sub2api/templates/sub2api-bot.env.example /etc/sub2api-bot.env
+sudo install -m 600 docker/sub2api-skill/sub2api-skill.env.example /etc/sub2api-bot.env
 ```
 
 2. 编辑环境变量：
@@ -123,15 +126,121 @@ sudo install -m 600 skills/sub2api/templates/sub2api-bot.env.example /etc/sub2ap
 sudo editor /etc/sub2api-bot.env
 ```
 
-3. 启动服务：
+3. 创建 systemd 服务并启动：
 
 ```bash
 sudo systemctl daemon-reload
-
+sudo systemctl enable --now sub2api-telegram-bot
 ```
 
+系统级 `/update` 会调用 `SUB2API_UPDATER_SCRIPT` 指定的更新脚本；如果检测到已是最新版，会直接提示“已是最新版”。
 
-## 七、免责声明
+## 七、Docker sidecar 部署
+
+Docker sidecar 部署适合 Docker 版 Sub2API。它使用独立镜像和独立目录运行 Telegram Bot，不修改 `weishaw/sub2api:latest` 官方镜像，也不向官方 Sub2API 容器写入文件。
+
+镜像：
+
+```text
+ghcr.io/deltrivx/sub2api-skill:latest
+```
+
+推荐目录结构：
+
+```text
+<docker-root>/sub2api/
+  docker-compose.yml
+  data/
+<docker-root>/sub2api-skill/
+  docker-compose.yml
+  .env
+  config/sub2api-bot-secrets.json
+  data/
+```
+
+复制示例文件：
+
+```bash
+mkdir -p sub2api-skill/config sub2api-skill/data
+cp docker/sub2api-skill/docker-compose.yml sub2api-skill/docker-compose.yml
+cp docker/sub2api-skill/sub2api-skill.env.example sub2api-skill/.env
+```
+
+编辑 `sub2api-skill/.env`，至少配置：
+
+```env
+SUB2API_BASE_URL=http://127.0.0.1:<sub2api-port>
+SUB2API_BOT_ALLOWED_CHAT_IDS=<telegram-chat-id>
+TELEGRAM_BOT_TOKEN=<telegram-bot-token>
+SUB2API_ADMIN_EMAIL=<admin-email>
+SUB2API_ADMIN_PASSWORD_B64=<base64-admin-password>
+DATABASE_HOST=127.0.0.1
+DATABASE_PORT=<postgres-port>
+DATABASE_USER=<postgres-user>
+DATABASE_PASSWORD=<postgres-password>
+DATABASE_DBNAME=sub2api
+SUB2API_DEPLOY_DIR=/sub2api-compose
+SUB2API_IMAGE=weishaw/sub2api:latest
+DOCKER_COMPOSE_CMD=docker compose
+```
+
+如果 Telegram 访问需要代理，可以同时配置：
+
+```env
+HTTP_PROXY=http://<proxy-host>:<proxy-port>
+HTTPS_PROXY=http://<proxy-host>:<proxy-port>
+NO_PROXY=localhost,127.0.0.1,*.local
+http_proxy=http://<proxy-host>:<proxy-port>
+https_proxy=http://<proxy-host>:<proxy-port>
+no_proxy=localhost,127.0.0.1,*.local
+```
+
+启动：
+
+```bash
+cd sub2api-skill
+docker compose up -d
+```
+
+Docker sidecar 的关键挂载：
+
+- `./config:/config`：保存 Bot secrets
+- `./data:/data`：保存 offset、待确认操作、导入缓存和备份
+- `<docker-root>/sub2api/data:/sub2api-data:ro`：只读访问 Sub2API 数据目录
+- `<docker-root>/sub2api:/sub2api-compose:ro`：只读访问官方 Sub2API compose 目录，用于 `/update` 按官方 compose 重建
+- `/var/run/docker.sock:/var/run/docker.sock`：允许 Bot 执行受确认保护的 Docker 重启/更新动作
+
+Docker 版 `/update` 行为：
+
+1. 立即回复“正在检测 Docker 版 Sub2API 镜像更新，请稍等…”
+2. 比对本地 `weishaw/sub2api:latest` 与远端官方镜像 digest
+3. 如果一致，回复“已是最新版”
+4. 如果有更新，弹出确认/取消按钮
+5. 确认后执行 `docker compose pull sub2api`
+6. 使用官方 Sub2API `docker-compose.yml` 重建 `sub2api` 服务
+7. 等待健康检查并清理旧悬空镜像
+
+## 八、安全原则
+
+- 不提交真实 Token、密码、JWT、API Key、Chat ID、数据库地址或内网地址
+- 所有敏感配置通过环境变量或本地 secrets 文件传入
+- Bot 只允许 `SUB2API_BOT_ALLOWED_CHAT_IDS` 中的聊天使用
+- 所有控制命令必须确认码或按钮确认
+- 导入账号默认关闭调度
+- 日志和回复默认脱敏
+- Docker sidecar 默认不修改官方 Sub2API 镜像；更新动作只在确认后通过官方 compose 执行
+
+## 九、CI 与镜像构建
+
+仓库包含 GitHub Actions：
+
+- Python 模板语法检查
+- Node 脚本语法检查
+- JSON 文件校验
+- README/模板敏感信息占位符检查
+- Docker sidecar 镜像构建并推送到 GHCR
+
+## 十、免责声明
 
 本项目是面向 Sub2API 的独立社区集成与运维模板，并非 Sub2API 官方组件，除非后续被 Sub2API 官方维护者明确接纳或合并。
 
@@ -145,32 +254,13 @@ sudo systemctl daemon-reload
 - 限制 Telegram Bot 可访问的 Chat ID，并保护环境变量文件和备份文件；
 - 对 `/restart`、`/update`、账号导入和备份等管理动作的结果负责。
 
-模板中的控制命令已设计为确认码保护，但这不能替代完善的权限隔离、日志审计、备份保护和生产变更流程。任何因部署、配置、误操作、凭据泄露、上游封禁、计费异常或第三方服务变化造成的损失，由使用者自行承担。
+模板中的控制命令已设计为确认保护，但这不能替代完善的权限隔离、日志审计、备份保护和生产变更流程。任何因部署、配置、误操作、凭据泄露、上游封禁、计费异常或第三方服务变化造成的损失，由使用者自行承担。
 
-所有第三方名称和商标均归其各自所有者所有。本文档中提到 Sub2API、OpenAI、Anthropic、Gemini、Telegram、GitHub 等，仅用于兼容性说明和使用文档。
+所有第三方名称和商标均归其各自所有者所有。本文档中提到 Sub2API、OpenAI、Anthropic、Gemini、Telegram、GitHub、Docker 等，仅用于兼容性说明和使用文档。
 
-## 八、安全原则
+## English README
 
-- 不提交真实 Token、密码、JWT、API Key、Chat ID、数据库地址或内网地址
-- 所有敏感配置通过环境变量或本地 secrets 文件传入
-- Bot 只允许 `SUB2API_BOT_ALLOWED_CHAT_IDS` 中的聊天使用
-- 所有控制命令必须确认码确认
-- 导入账号默认关闭调度
-- 日志和回复默认脱敏
-
-## 九、英文备用 README
-
-英文版备用文档见：[`README_EN.md`](README_EN.md)
-
-## 十、CI
-
-仓库包含 GitHub Actions：
-
-- Python 模板语法检查
-- Node 脚本语法检查
-- README/模板敏感信息占位符检查
-
-推送到 GitHub 后会自动触发构建。
+English documentation: [`README_EN.md`](README_EN.md)
 
 ## License
 
