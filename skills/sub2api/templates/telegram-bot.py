@@ -85,6 +85,67 @@ def message_text_with_urls(msg):
 def run(cmd, timeout=20):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
 
+def docker_enabled():
+    return pathlib.Path(os.environ.get("DOCKER_HOST_SOCKET", "/var/run/docker.sock")).exists()
+
+def docker_compose_dir():
+    return os.environ.get("SUB2API_DEPLOY_DIR", "/sub2api-compose")
+
+def docker_sub2api_image():
+    return os.environ.get("SUB2API_IMAGE", "weishaw/sub2api:latest")
+
+def docker_compose_cmd():
+    return os.environ.get("DOCKER_COMPOSE_CMD", "docker compose")
+
+def docker_local_digest(image=None):
+    image = image or docker_sub2api_image()
+    r = run("docker image inspect " + shlex.quote(image) + " --format '{{json .RepoDigests}}'", timeout=20)
+    if r.returncode != 0:
+        return ""
+    try:
+        digests = json.loads(r.stdout.strip())
+    except Exception:
+        return ""
+    for item in digests or []:
+        if "@sha256:" in item:
+            return item.split("@", 1)[1]
+    return ""
+
+def docker_remote_digest(image=None):
+    image = image or docker_sub2api_image()
+    r = run("docker manifest inspect " + shlex.quote(image), timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[-500:] or "docker manifest inspect failed")
+    data = json.loads(r.stdout)
+    if isinstance(data, dict) and data.get("manifests"):
+        arch = os.environ.get("SUB2API_IMAGE_ARCH", "amd64")
+        os_name = os.environ.get("SUB2API_IMAGE_OS", "linux")
+        for item in data.get("manifests") or []:
+            platform = item.get("platform") or {}
+            if platform.get("architecture") == arch and platform.get("os") == os_name and item.get("digest"):
+                return item.get("digest")
+        first = data.get("manifests", [{}])[0]
+        return first.get("digest", "")
+    if data.get("config", {}).get("digest"):
+        return data["config"]["digest"]
+    return ""
+
+def docker_update_command():
+    deploy_dir = docker_compose_dir()
+    image = docker_sub2api_image()
+    compose = docker_compose_cmd()
+    return (
+        "set -eu; "
+        "cd " + shlex.quote(deploy_dir) + "; "
+        "echo '步骤 1/5：拉取官方 sub2api 最新镜像...'; " + compose + " pull sub2api; "
+        "echo '步骤 2/5：按官方 docker-compose 重建 sub2api 容器...'; " + compose + " up -d sub2api; "
+        "echo '步骤 3/5：等待健康检查...'; "
+        "for i in $(seq 1 30); do status=$(docker inspect -f '{{.State.Health.Status}}' sub2api 2>/dev/null || true); [ "$status" = healthy ] && break; sleep 2; done; "
+        "docker ps --format '容器状态：{{.Names}} {{.Image}} {{.Status}}' | grep '^容器状态：sub2api '; "
+        "echo '步骤 4/5：清理旧悬空镜像...'; docker image prune -f; "
+        "echo '步骤 5/5：更新完成。当前镜像：'; docker image inspect " + shlex.quote(image) + " --format '{{.RepoTags}} {{.Id}}'"
+    )
+
 def env_first(*names, default=""):
     for name in names:
         value = os.environ.get(name)
@@ -433,6 +494,12 @@ def make_confirm(action, summary, command):
     pending_save(data)
     return "需要确认：" + summary + "\n确认码：" + code + "\n5 分钟内发送：/confirm " + code + "\n取消：/cancel"
 
+def confirm_markup(code):
+    return {"inline_keyboard": [[
+        {"text": "确认", "callback_data": "confirm:" + str(code)},
+        {"text": "取消", "callback_data": "cancel:" + str(code)},
+    ]]}
+
 def cmd_pending():
     p = pending_load()
     if not p: return "当前没有待确认操作。"
@@ -460,16 +527,43 @@ def cmd_confirm(text):
     ok = (r.returncode == 0)
     return ("已执行：" if ok else "执行失败：") + summary + "\n" + ((r.stdout + r.stderr).strip()[-1500:] or "无输出")
 
-def cmd_restart(text):
-    parts=text.split()
-    if len(parts)<2: return "用法：/restart bot 或 /restart sub2api"
-    target=parts[1].lower()
-    if target in ("bot","telegram","telegram-bot"):
-        return make_confirm("restart", "重启 Telegram Bot 容器", "kill -TERM 1")
-    if target in ("sub2api","api"):
+def restart_target_command(target):
+    if target in ("bot", "telegram", "telegram-bot"):
+        return "重启 Telegram Bot 容器", "kill -TERM 1"
+    if target in ("sub2api", "api"):
         container = os.environ.get("SUB2API_CONTAINER_NAME", "sub2api")
-        return make_confirm("restart", "重启 sub2api 容器", "docker restart " + shlex.quote(container))
+        if docker_enabled():
+            return "重启 sub2api 容器", "docker restart " + shlex.quote(container)
+        return "重启 sub2api 服务", "systemctl restart sub2api && systemctl is-active sub2api"
+    return None, None
+
+def restart_target_markup():
+    return {"inline_keyboard": [[
+        {"text": "Bot", "callback_data": "restart_select:bot"},
+        {"text": "Sub2API", "callback_data": "restart_select:sub2api"},
+    ]]}
+
+def cmd_restart(text, chat_id=None):
+    parts=text.split()
+    if len(parts)<2:
+        if chat_id:
+            send_message(chat_id, "请选择要重启的服务：", restart_target_markup())
+            return None
+        return "请选择要重启的服务：Bot / Sub2API"
+    summary, command = restart_target_command(parts[1].lower())
+    if summary and command:
+        return make_confirm("restart", summary, command)
     return "不支持的服务。可选：bot / sub2api"
+
+def cmd_restart_select(target, chat_id):
+    summary, command = restart_target_command(target)
+    if not summary:
+        return "不支持的服务。"
+    reply = make_confirm("restart", summary, command)
+    data = pending_load() or {}
+    code = data.get("code", "")
+    send_message(chat_id, reply, confirm_markup(code) if code else None)
+    return None
 
 
 def cmd_importhelp():
@@ -922,6 +1016,23 @@ def update_script():
     return os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py")
 
 def cmd_update(chat_id=None):
+    if docker_enabled() and pathlib.Path(docker_compose_dir()).exists():
+        image = docker_sub2api_image()
+        try:
+            local = docker_local_digest(image)
+            remote = docker_remote_digest(image)
+        except Exception as e:
+            return "检测 Docker 镜像更新失败：" + type(e).__name__ + ": " + str(e)[:300]
+        if local and remote and local == remote:
+            return "已是最新版。\n当前镜像：" + image + "\nDigest：" + local
+        detail = "检测到 Docker 镜像可更新。\n当前 Digest：" + (local or "未知") + "\n远端 Digest：" + (remote or "未知")
+        reply = make_confirm("update", "更新 Sub2API Docker 容器。\n" + detail, docker_update_command())
+        data = pending_load() or {}
+        code = data.get("code", "")
+        if chat_id and code:
+            send_message(chat_id, reply, confirm_markup(code))
+            return None
+        return reply
     script = update_script()
     r = run(script + " check", timeout=120)
     out = (r.stdout + r.stderr).strip()
@@ -933,10 +1044,7 @@ def cmd_update(chat_id=None):
     data = pending_load() or {}
     code = data.get("code", "")
     if chat_id and code:
-        send_message(chat_id, reply, {"inline_keyboard": [[
-            {"text": "确认更新", "callback_data": "confirm:" + code},
-            {"text": "取消", "callback_data": "cancel:" + code}
-        ]]})
+        send_message(chat_id, reply, confirm_markup(code))
         return None
     return reply
 
@@ -957,7 +1065,7 @@ def handle_command(text, chat_id="0"):
         if cmd == "/confirm": return cmd_confirm(text)
         if cmd == "/cancel": return cmd_cancel()
         if cmd == "/backup": return cmd_backup()
-        if cmd == "/restart": return cmd_restart(text)
+        if cmd == "/restart": return cmd_restart(text, chat_id)
         if cmd == "/debug": return cmd_debug()
         if cmd == "/update": return cmd_update(chat_id)
         if cmd == "/checkaccounts": return cmd_checkaccounts(text, chat_id)
@@ -1040,9 +1148,13 @@ def main():
                             send_message(chat_id, cmd_confirm_account_cleanup("/confirm_soft_delete " + code, "soft"))
                         else:
                             send_message(chat_id, cmd_confirm_account_cleanup("/confirm_hard_delete " + code, "hard"))
+                    elif data.startswith("restart_select:"):
+                        target = data.split(":", 1)[1]
+                        answer_callback_query(cb_id, "已选择")
+                        cmd_restart_select(target, chat_id)
                     elif data.startswith("confirm:"):
                         code = data.split(":", 1)[1]
-                        answer_callback_query(cb_id, "开始更新")
+                        answer_callback_query(cb_id, "开始执行")
                         send_message(chat_id, cmd_confirm("/confirm " + code))
                     elif data.startswith("cancel:"):
                         answer_callback_query(cb_id, "已取消")

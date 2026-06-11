@@ -10,6 +10,7 @@ services:
       - ./config:/config
       - ./data:/data
       - /vol2/1000/Docker/sub2api/data:/sub2api-data:ro
+      - /vol2/1000/Docker/sub2api:/sub2api-compose:ro
       - /var/run/docker.sock:/var/run/docker.sock
     logging:
       driver: json-file
