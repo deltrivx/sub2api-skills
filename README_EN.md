@@ -69,7 +69,6 @@ These commands require confirmation before execution:
 - `/restart` — first shows `Bot` / `Sub2API` buttons, then confirm/cancel buttons
 - `/restart bot|sub2api` — directly selects a target and asks for confirmation
 - `/update` — immediately sends an update-check notice; host-level deployments use the configured updater, while Docker deployments compare the official image digest before asking for confirmation
-- `/checkaccounts` — checks account availability, then provides soft-delete / hard-delete buttons with a second confirmation step
 
 ## 5. Account JSON Import Format
 

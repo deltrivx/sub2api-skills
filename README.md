@@ -71,7 +71,6 @@ export SUB2API_USER_ID="<your-user-id>"
 - `/restart`：先弹出 `Bot` / `Sub2API` 选择按钮，再进入确认/取消
 - `/restart bot|sub2api`：直接指定目标并进入确认
 - `/update`：先立即提示正在检测更新；系统级部署走本机 updater，Docker 部署比对官方镜像后再决定是否提示确认/取消
-- `/checkaccounts`：检测全部账号可用性；发现失效账号后用按钮选择软删除/硬删除，并进行二次确认
 
 ## 五、账号 JSON 导入格式
 

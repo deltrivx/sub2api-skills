@@ -30,7 +30,6 @@ COMMANDS = {
     "/restart": "重启：/restart bot|sub2api",
     "/debug": "健康检查与日志摘要",
     "/update": "检查更新",
-    "/checkaccounts": "检测全部账号可用性",
 }
 
 def log(*args):
@@ -212,7 +211,7 @@ def yesno(v):
 
 
 def cmd_help():
-    return "Sub2API 助手可用命令（精简版）：\n" + "\n".join([f"{k} - {v}" for k, v in COMMANDS.items()])
+    return "Sub2API 助手可用命令：\n" + "\n".join([f"{k} - {v}" for k, v in COMMANDS.items()])
 
 def cmd_accounts():
     rows = []
@@ -511,8 +510,6 @@ def cmd_confirm(text):
     if not p: return "没有可确认的操作，或确认码已过期。"
     if parts[1].strip() != p.get("code"):
         return "确认码不匹配。"
-    if p.get("kind") == "account_cleanup" and p.get("stage") == "await_first_confirm":
-        return cmd_account_cleanup_first_confirm(p)
     command = p.get("command") or ""
     summary = p.get("summary") or ""
     pending_clear()
@@ -836,177 +833,6 @@ def handle_document_message(msg):
     return "\n".join(lines)
 
 
-def account_candidate_sql():
-    return """SELECT DISTINCT a.id,a.name
-FROM accounts a
-WHERE a.deleted_at IS NULL
-ORDER BY a.id;"""
-
-def account_candidate_ids():
-    out=psql(account_candidate_sql())
-    items=[]
-    for line in out.splitlines() if out else []:
-        aid,name=(line.split("|",1)+[""])[:2]
-        sid=safe_int(aid)
-        if sid is not None:
-            items.append((sid,name))
-    return items
-
-def is_bad_account_status(status, detail):
-    text=((status or "")+" "+(detail or "")).lower()
-    if status == "可用":
-        return False
-    bad_words=("invalid_grant","expired","expire","unauthorized","401","403","deactivated","revoked","refresh token","unsupported","forbidden","invalid_request","access_denied","测试失败","不可用","error","failed")
-    return True if any(x in text for x in bad_words) else status != "可用"
-
-def account_cleanup_pending_load():
-    p=pending_load()
-    if p and p.get("kind") == "account_cleanup":
-        return p
-    return None
-
-def account_cleanup_pending_save(data):
-    pending_save(data)
-
-def cleanup_code(prefix=""):
-    return (prefix + str(int(time.time()))[-6:])[-8:]
-
-def cmd_checkaccounts(text="", chat_id=None):
-    candidates=account_candidate_ids()
-    if not candidates:
-        return "没有找到可检测账号。"
-    ok=[]; bad=[]
-    lines=["账号可用性检测完成："]
-    for aid,name in candidates:
-        status,detail=test_import_account(aid)
-        if is_bad_account_status(status, detail):
-            bad.append({"id": aid, "name": name, "status": status, "detail": detail[:220]})
-        else:
-            ok.append(aid)
-    data={"kind":"account_cleanup","stage":"checked","created_at":int(time.time()),"expires_at":int(time.time())+600,"bad_account_ids":[x["id"] for x in bad],"bad":bad,"summary":{"checked":len(candidates),"ok":len(ok),"bad":len(bad)}}
-    account_cleanup_pending_save(data)
-    lines += ["", "检测范围：全部账号", "检测账号："+str(len(candidates)), "可用："+str(len(ok)), "不可用/异常："+str(len(bad))]
-    markup=None
-    if bad:
-        lines += ["", "不可用账号："]
-        for x in bad[:30]:
-            detail=(x.get("detail") or "").replace("\n"," ")[:120]
-            lines.append("- #"+str(x["id"])+" "+x.get("name","")+" | "+x.get("status","")+((" | "+detail) if detail else ""))
-        if len(bad) > 30:
-            lines.append("其余省略："+str(len(bad)-30))
-        markup={"inline_keyboard":[
-            [{"text":"软删除（可恢复）","callback_data":"account_cleanup:soft"}],
-            [{"text":"硬删除（不可恢复）","callback_data":"account_cleanup:hard"}],
-            [{"text":"取消","callback_data":"cancel:account_cleanup"}],
-        ]}
-    else:
-        lines.append("未发现需要清理的不可用账号。")
-    msg="\n".join(lines)
-    if chat_id and markup:
-        send_message(chat_id, msg, markup)
-        return None
-    return msg
-
-def verify_account_ids(ids):
-    ids=[int(x) for x in ids if safe_int(x) is not None]
-    if not ids:
-        return []
-    idlist=",".join(str(x) for x in sorted(set(ids)))
-    sql="""SELECT DISTINCT a.id
-FROM accounts a
-WHERE a.deleted_at IS NULL
-  AND a.id IN ("""+idlist+") ORDER BY a.id;"
-    out=psql(sql)
-    return [int(x.strip()) for x in out.splitlines() if x.strip().isdigit()] if out else []
-
-def cmd_cleanaccounts(text):
-    parts=text.split()
-    if len(parts) < 2 or parts[1].lower() not in ("soft","hard"):
-        return "用法：/cleanaccounts soft 或 /cleanaccounts hard。请先执行 /checkaccounts。"
-    return cmd_cleanaccounts_mode(parts[1].lower(), button=False)
-
-def cmd_cleanaccounts_mode(mode, button=False):
-    if mode not in ("soft","hard"):
-        return "未知清理方式。"
-    p=account_cleanup_pending_load()
-    if not p or p.get("stage") != "checked":
-        return "没有可清理的检测结果，或已过期。请先执行 /checkaccounts。"
-    ids=verify_account_ids(p.get("bad_account_ids",[]))
-    if not ids:
-        pending_clear()
-        return "没有仍符合条件的不可用账号。"
-    code=cleanup_code()
-    p.update({"stage":"await_first_confirm","mode":mode,"code":code,"account_ids":ids,"expires_at":int(time.time())+600})
-    account_cleanup_pending_save(p)
-    if mode == "soft":
-        summary="准备软删除 "+str(len(ids))+" 个不可用账号。\n软删除会关闭调度、置为 inactive、写入 deleted_at，记录可恢复。"
-    else:
-        summary="⚠️ 准备硬删除 "+str(len(ids))+" 个不可用账号。\n硬删除会删除账号及分组绑定记录，不可恢复。"
-    text=summary
-    if button:
-        return text, {"inline_keyboard":[
-            [{"text":"确认继续","callback_data":"account_first:"+code}],
-            [{"text":"取消","callback_data":"cancel:account_cleanup"}],
-        ]}
-    return text+"\n第一次确认：/confirm "+code+"\n取消：/cancel"
-
-def account_second_confirm_markup():
-    p=account_cleanup_pending_load()
-    if not p or p.get("stage") != "await_second_confirm":
-        return None
-    mode=p.get("mode")
-    code=p.get("second_code") or ""
-    if mode == "soft":
-        cb="account_second:soft:"+code
-        text="最终确认软删除"
-    else:
-        cb="account_second:hard:"+code
-        text="最终确认硬删除"
-    return {"inline_keyboard":[
-        [{"text":text,"callback_data":cb}],
-        [{"text":"取消","callback_data":"cancel:account_cleanup"}],
-    ]}
-
-def cmd_account_cleanup_first_confirm(p):
-    mode=p.get("mode")
-    ids=verify_account_ids(p.get("account_ids") or p.get("bad_account_ids",[]))
-    if not ids:
-        pending_clear()
-        return "没有仍符合条件的账号，已取消。"
-    second=cleanup_code("s" if mode=="soft" else "h")
-    p.update({"stage":"await_second_confirm","second_code":second,"account_ids":ids,"expires_at":int(time.time())+600})
-    account_cleanup_pending_save(p)
-    if mode == "soft":
-        return "二次确认软删除：\n即将软删除 "+str(len(ids))+" 个不可用账号。"
-    return "⚠️ 二次确认硬删除：\n即将硬删除 "+str(len(ids))+" 个不可用账号，该操作不可恢复。"
-
-def cmd_confirm_account_cleanup(text, mode):
-    parts=text.split()
-    if len(parts)<2:
-        return "缺少二次确认码。"
-    p=account_cleanup_pending_load()
-    if not p or p.get("stage") != "await_second_confirm" or p.get("mode") != mode:
-        return "没有对应的二次确认操作，或已过期。"
-    if parts[1].strip() != p.get("second_code"):
-        return "二次确认码不匹配。"
-    ids=verify_account_ids(p.get("account_ids",[]))
-    pending_clear()
-    if not ids:
-        return "没有仍符合条件的账号，未执行。"
-    idlist=",".join(str(x) for x in ids)
-    if mode == "soft":
-        sql="UPDATE accounts SET status='inactive', schedulable=false, deleted_at=now(), updated_at=now(), error_message=COALESCE(error_message,'disabled by account cleanup') WHERE deleted_at IS NULL AND id IN ("+idlist+");"
-        psql(sql)
-        return "已软删除不可用账号："+str(len(ids))+" 个。\n正常账号未处理。"
-    # Hard delete: remove common child bindings first. Keep best-effort for optional tables.
-    psql("DELETE FROM account_groups WHERE account_id IN ("+idlist+");")
-    try:
-        psql("DELETE FROM scheduler_outbox WHERE account_id IN ("+idlist+");")
-    except Exception:
-        pass
-    psql("DELETE FROM accounts WHERE id IN ("+idlist+");")
-    return "已硬删除不可用账号："+str(len(ids))+" 个。\n正常账号未处理。"
-
 def update_script():
     return os.environ.get("SUB2API_UPDATER_SCRIPT", "/opt/sub2api/bot/sub2api_updater.py")
 
@@ -1069,10 +895,6 @@ def handle_command(text, chat_id="0"):
         if cmd == "/restart": return cmd_restart(text, chat_id)
         if cmd == "/debug": return cmd_debug()
         if cmd == "/update": return cmd_update(chat_id)
-        if cmd == "/checkaccounts": return cmd_checkaccounts(text, chat_id)
-        if cmd == "/cleanaccounts": return cmd_cleanaccounts(text)
-        if cmd in ("/confirm_soft_delete", "/confirm-soft-delete"): return cmd_confirm_account_cleanup(text, "soft")
-        if cmd in ("/confirm_hard_delete", "/confirm-hard-delete"): return cmd_confirm_account_cleanup(text, "hard")
         return "未知命令。\n\n" + cmd_help()
     except Exception as e:
         return "执行失败：" + type(e).__name__ + ": " + str(e)[:300]
@@ -1129,27 +951,7 @@ def main():
                     if chat_id not in ALLOWED_CHAT_IDS:
                         log("ignore unauthorized callback", chat_id)
                         continue
-                    if data.startswith("account_cleanup:"):
-                        mode=data.split(":",1)[1]
-                        answer_callback_query(cb_id, "已选择" + ("软删除" if mode=="soft" else "硬删除"))
-                        res=cmd_cleanaccounts_mode(mode, button=True)
-                        if isinstance(res, tuple):
-                            send_message(chat_id, res[0], res[1])
-                        else:
-                            send_message(chat_id, res)
-                    elif data.startswith("account_first:"):
-                        code=data.split(":",1)[1]
-                        answer_callback_query(cb_id, "已确认，等待二次确认")
-                        reply=cmd_confirm("/confirm " + code)
-                        send_message(chat_id, reply, account_second_confirm_markup())
-                    elif data.startswith("account_second:"):
-                        _,mode,code=data.split(":",2)
-                        answer_callback_query(cb_id, "开始执行")
-                        if mode == "soft":
-                            send_message(chat_id, cmd_confirm_account_cleanup("/confirm_soft_delete " + code, "soft"))
-                        else:
-                            send_message(chat_id, cmd_confirm_account_cleanup("/confirm_hard_delete " + code, "hard"))
-                    elif data.startswith("restart_select:"):
+                    if data.startswith("restart_select:"):
                         target = data.split(":", 1)[1]
                         answer_callback_query(cb_id, "已选择")
                         cmd_restart_select(target, chat_id)
@@ -1183,9 +985,6 @@ def main():
                         send_message(chat_id, "收到文件，正在检查格式~")
                     reply = handle_document_message(msg)
                 elif text.startswith("/"):
-                    cmd = text.strip().split()[0].split("@", 1)[0].lower()
-                    if cmd == "/checkaccounts":
-                        send_message(chat_id, "收到指令，开始检测失效账号~")
                     reply = handle_command(text, chat_id)
                 if reply:
                     send_message(chat_id, reply)
