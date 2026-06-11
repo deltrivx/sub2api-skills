@@ -140,7 +140,7 @@ def docker_update_command():
         "echo '步骤 1/5：拉取官方 sub2api 最新镜像...'; " + compose + " pull sub2api; "
         "echo '步骤 2/5：按官方 docker-compose 重建 sub2api 容器...'; " + compose + " up -d sub2api; "
         "echo '步骤 3/5：等待健康检查...'; "
-        "for i in $(seq 1 30); do status=$(docker inspect -f '{{.State.Health.Status}}' sub2api 2>/dev/null || true); [ "$status" = healthy ] && break; sleep 2; done; "
+        "for i in $(seq 1 30); do status=$(docker inspect -f '{{.State.Health.Status}}' sub2api 2>/dev/null || true); [ x$status = xhealthy ] && break; sleep 2; done; "
         "docker ps --format '容器状态：{{.Names}} {{.Image}} {{.Status}}' | grep '^容器状态：sub2api '; "
         "echo '步骤 4/5：清理旧悬空镜像...'; docker image prune -f; "
         "echo '步骤 5/5：更新完成。当前镜像：'; docker image inspect " + shlex.quote(image) + " --format '{{.RepoTags}} {{.Id}}'"
