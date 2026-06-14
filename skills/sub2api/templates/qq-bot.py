@@ -434,9 +434,14 @@ def main():
 
             # 1) Hello (op=10)
             hello_raw = ws_recv()
+            log("hello_raw len=", len(hello_raw) if hello_raw else 0, "head=", (hello_raw[:80] if hello_raw else b""))
             if not hello_raw:
                 raise RuntimeError("gateway closed before hello")
-            hello = json.loads(hello_raw.decode())
+            try:
+                hello = json.loads(hello_raw.decode(errors="replace"))
+            except Exception as e:
+                log("hello json parse error", type(e).__name__, "raw_hex=", hello_raw[:80].hex())
+                raise
             heartbeat_interval = (hello.get("d") or {}).get("heartbeat_interval", 30000)
             log("hello heartbeat_interval", heartbeat_interval)
 
