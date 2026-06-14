@@ -5,7 +5,9 @@ on:
     branches: [master]
     paths:
       - docker/sub2api-skill/**
+      - skills/sub2api/templates/bot_core.py
       - skills/sub2api/templates/telegram-bot.py
+      - skills/sub2api/templates/qq-bot.py
       - .github/workflows/docker-image.yml
   workflow_dispatch:
 

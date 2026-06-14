@@ -1,6 +1,11 @@
-# Sub2API Skills 与 Telegram 运维机器人
+# Sub2API Skills 与 Telegram / QQ 运维机器人
 
-这个仓库提供 Sub2API 的助手 Skill、Telegram 运维机器人模板，以及可选的 Docker sidecar 部署方案。它适合在不修改 Sub2API 官方镜像和官方容器的前提下，为 Sub2API 增加查询、诊断、账号导入、备份、重启和更新等运维能力。
+这个仓库提供 Sub2API 的助手 Skill、Telegram 与 QQ 双后端运维机器人模板，以及可选的 Docker sidecar 部署方案。它适合在不修改 Sub2API 官方镜像和官方容器的前提下，为 Sub2API 增加查询、诊断、账号导入、备份、重启和更新等运维能力。
+
+两个机器人共享同一份业务逻辑（`bot_core.py`），只切换传输层：
+
+- Telegram Bot（`telegram-bot.py`）：基于 `getUpdates` 长轮询。
+- QQ Bot（`qq-bot.py`）：基于 [QQ 开放平台 v2](https://bot.q.qq.com/wiki/develop/api-v2/) 的 WebSocket Gateway，支持频道 @、群 @、C2C 私聊消息。
 
 > 安全说明：仓库内所有地址、Token、密码、Chat ID、账号 Key 均使用占位符或环境变量。请不要把真实凭据提交到 GitHub。
 
@@ -42,9 +47,28 @@ export SUB2API_USER_ID="<your-user-id>"
 
 模板位置：
 
-- `skills/sub2api/templates/telegram-bot.py`
+- 公共命令模块：`skills/sub2api/templates/bot_core.py`（与传输层无关，Telegram 与 QQ 共用）
+- Telegram 传输层：`skills/sub2api/templates/telegram-bot.py`
 
 机器人支持系统级部署和 Docker sidecar 部署。系统级部署适合直接运行在 Sub2API 所在主机；Docker sidecar 部署适合 Docker 版 Sub2API，独立运行在旁路容器中，不修改官方镜像和官方容器。
+
+## 4.5、QQ 运维机器人
+
+QQ Bot 模板与 Telegram 共用 `bot_core.py` 的全部业务命令，仅传输层不同。
+
+- QQ 传输层：`skills/sub2api/templates/qq-bot.py`
+- QQ 文档：[`skills/sub2api/docs/qq-bot.md`](skills/sub2api/docs/qq-bot.md)
+
+QQ Bot 使用的官方端点：
+
+| 用途 | URL |
+| --- | --- |
+| 获取调用凭证 | `https://bots.qq.com/app/getAppAccessToken` |
+| OpenAPI（正式） | `https://api.sgroup.qq.com/` |
+| OpenAPI（沙箱） | `https://sandbox.api.sgroup.qq.com/` |
+| WebSocket Gateway | `wss://api.sgroup.qq.com/websockets`（通过 `/gateway` 自动发现） |
+
+QQ Bot 默认订阅公开频道 @ 消息、群 @ 消息、C2C 私聊和交互事件；按钮类确认 UI 在 QQ 平台需要审核模板，因此 QQ 后端回退到与 Telegram 相同的 `/confirm <code>` 文字确认码，控制命令的安全性保持一致。
 
 ### 查询与诊断
 
@@ -168,9 +192,11 @@ cp docker/sub2api-skill/sub2api-skill.env.example sub2api-skill/.env
 编辑 `sub2api-skill/.env`，至少配置：
 
 ```env
+# 选择后端：telegram | qq
+SUB2API_BOT_BACKEND=telegram
+
 SUB2API_BASE_URL=http://127.0.0.1:<sub2api-port>
-SUB2API_BOT_ALLOWED_CHAT_IDS=<telegram-chat-id>
-TELEGRAM_BOT_TOKEN=<telegram-bot-token>
+SUB2API_BOT_ALLOWED_CHAT_IDS=<chat-id>
 SUB2API_ADMIN_EMAIL=<admin-email>
 SUB2API_ADMIN_PASSWORD_B64=<base64-admin-password>
 DATABASE_HOST=127.0.0.1
@@ -182,6 +208,11 @@ SUB2API_DEPLOY_DIR=/sub2api-compose
 SUB2API_IMAGE=weishaw/sub2api:latest
 DOCKER_COMPOSE_CMD=docker compose
 ```
+
+`SUB2API_BOT_BACKEND` 选择启动哪个后端：
+
+- `telegram`：还需要 `TELEGRAM_BOT_TOKEN=<telegram-bot-token>`，`SUB2API_BOT_ALLOWED_CHAT_IDS` 用 Telegram chat_id。
+- `qq`：还需要 `QQ_APP_ID=<qq-app-id>` 和 `QQ_APP_SECRET=<qq-app-secret>`（在 [q.qq.com](https://q.qq.com) 创建机器人后获取），`SUB2API_BOT_ALLOWED_CHAT_IDS` 用 `channel:<channel_id>` / `group:<group_openid>` / `c2c:<user_openid>` 或裸 openid。沙箱调试可设 `SUB2API_QQ_SANDBOX=1`。
 
 如果 Telegram 访问需要代理，可以同时配置：
 
@@ -247,15 +278,15 @@ Docker 版 `/update` 行为：
 
 本项目不提供法律、财务、合规、安全或运维层面的保证。使用者需要自行负责：
 
-- 妥善保护 API Key、Refresh Token、Telegram Token、数据库凭据和管理密码；
+- 妥善保护 API Key、Refresh Token、Telegram Token、QQ AppID/AppSecret、数据库凭据和管理密码；
 - 遵守上游服务商条款、本地法律法规和平台规则；
 - 确认账号共享、额度分发、API 转发、计费统计、自动化导入和运维操作均已获得授权；
-- 限制 Telegram Bot 可访问的 Chat ID，并保护环境变量文件和备份文件；
+- 限制 Telegram Bot 可访问的 Chat ID、QQ Bot 可访问的 channel/group/user 白名单，并保护环境变量文件和备份文件；
 - 对 `/restart`、`/update`、账号导入和备份等管理动作的结果负责。
 
 模板中的控制命令已设计为确认保护，但这不能替代完善的权限隔离、日志审计、备份保护和生产变更流程。任何因部署、配置、误操作、凭据泄露、上游封禁、计费异常或第三方服务变化造成的损失，由使用者自行承担。
 
-所有第三方名称和商标均归其各自所有者所有。本文档中提到 Sub2API、OpenAI、Anthropic、Gemini、Telegram、GitHub、Docker 等，仅用于兼容性说明和使用文档。
+所有第三方名称和商标均归其各自所有者所有。本文档中提到 Sub2API、OpenAI、Anthropic、Gemini、Telegram、QQ、腾讯、GitHub、Docker 等，仅用于兼容性说明和使用文档。
 
 ## English README
 

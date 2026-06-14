@@ -1,3 +1,10 @@
+# Sub2API Skill 容器编排
+#
+# 通过 `.env` 中的 SUB2API_BOT_BACKEND 选择后端：
+#   SUB2API_BOT_BACKEND=telegram   → 启动 Telegram Bot
+#   SUB2API_BOT_BACKEND=qq         → 启动 QQ Bot（QQ 开放平台 v2）
+#
+# 后端凭据也在 .env 中配置（TELEGRAM_BOT_TOKEN 或 QQ_APP_ID/QQ_APP_SECRET）。
 services:
   sub2api-skill:
     image: ghcr.io/deltrivx/sub2api-skill:latest

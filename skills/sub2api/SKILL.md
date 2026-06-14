@@ -1,6 +1,6 @@
 ---
 name: sub2api
-description: Assistant for Sub2API, an open-source AI API gateway platform (https://github.com/Wei-Shaw/sub2api). Use when the user asks about Sub2API, managing accounts, groups, balance, tokens, or the optional Telegram operations bot template.
+description: Assistant for Sub2API, an open-source AI API gateway platform (https://github.com/Wei-Shaw/sub2api). Use when the user asks about Sub2API, managing accounts, groups, balance, tokens, or the optional Telegram / QQ operations bot templates.
 ---
 
 # SKILL: sub2api
@@ -15,7 +15,7 @@ It aggregates multiple OpenAI accounts behind a unified API, and provides accoun
 3. Do not read `.env` files or environment variables containing credentials.
 4. After `create-token`, do not make any follow-up call to retrieve or list the key. Report success and tell the user to use the token from the response.
 5. Do not modify the security scripts to disable masking or redirect output.
-6. Telegram Bot templates must keep secrets in environment files or runtime secrets, never hard-coded in repository files.
+6. Telegram / QQ Bot templates must keep secrets in environment files or runtime secrets, never hard-coded in repository files. This includes Telegram Bot tokens and QQ AppID / AppSecret.
 7. Imported account files may contain API keys or refresh tokens. Store them only in the configured Sub2API database/runtime target and never echo values back; report field names only.
 8. Control operations such as restart/update must use confirmation-code or button-based confirmation protection.
 
@@ -43,13 +43,16 @@ It aggregates multiple OpenAI accounts behind a unified API, and provides accoun
 | `scan-config` | Inspect config structure with best-effort secret redaction | `docs/actions-config.md` |
 | `help` | Answer questions about Sub2API | `docs/help.md` |
 
-## Optional Telegram Bot Template
+## Optional Operations Bot Templates (Telegram / QQ)
 
-This repository also ships a deployment template under `templates/` for a Telegram-based Sub2API operations bot. It is not enabled automatically by the skill.
+This repository ships deployment templates under `templates/` for Sub2API operations bots. They are not enabled automatically by the skill. Both bots share one business-logic module (`bot_core.py`) and differ only in transport:
 
-Template capabilities include:
+- `templates/telegram-bot.py` — Telegram long-polling bot.
+- `templates/qq-bot.py` — QQ Open Platform v2 WebSocket Gateway bot (guild channel `@`, group `@`, C2C). See `docs/qq-bot.md`.
 
-- Chinese Telegram command menu.
+Template capabilities (identical across backends):
+
+- Chinese command menu.
 - Comprehensive Sub2API status, account routing, usage, limits, balance, model, channel and token diagnostics.
 - JSON/TXT account-file import, plus safe ZIP/TAR/TGZ archive extraction, with automatic group matching/creation and account testing.
 - Safe reporting of imported account metadata without printing secrets.

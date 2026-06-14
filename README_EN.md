@@ -1,6 +1,11 @@
-# Sub2API Skills and Telegram Operations Bot
+# Sub2API Skills and Telegram / QQ Operations Bots
 
-This repository provides an assistant skill for Sub2API, a Telegram operations bot template, and an optional Docker sidecar deployment. It is designed to add diagnostics, account import, backup, restart, and update workflows without modifying the official Sub2API image or container.
+This repository provides an assistant skill for Sub2API, **dual-backend** operations bot templates (Telegram **and** QQ), and an optional Docker sidecar deployment. It is designed to add diagnostics, account import, backup, restart, and update workflows without modifying the official Sub2API image or container.
+
+Both bots share one business-logic module (`bot_core.py`) — only the transport differs:
+
+- Telegram bot (`telegram-bot.py`): long-polling via `getUpdates`.
+- QQ bot (`qq-bot.py`): WebSocket Gateway of the [QQ Open Platform v2](https://bot.q.qq.com/wiki/develop/api-v2/), supporting guild channel `@`, group `@`, and C2C private messages.
 
 > Security notice: all URLs, tokens, passwords, chat IDs, and account keys in this repository are placeholders or environment variables. Do not commit real credentials to GitHub.
 
@@ -38,11 +43,32 @@ export SUB2API_USER_ID="<your-user-id>"
 
 ## 4. Telegram Operations Bot
 
-Template file:
+Template files:
 
-- `skills/sub2api/templates/telegram-bot.py`
+- Transport-agnostic business logic: `skills/sub2api/templates/bot_core.py` (shared with QQ)
+- Telegram transport: `skills/sub2api/templates/telegram-bot.py`
 
 The bot supports both host-level deployments and Docker sidecar deployments. Host-level deployment is suitable when Sub2API runs as a binary, systemd service, or another local host service. Docker sidecar deployment is suitable for Docker-based Sub2API installations and keeps the official Sub2API image and container clean.
+
+### 4.1. QQ Operations Bot
+
+The QQ bot reuses every business command from `bot_core.py` — only the transport differs.
+
+- QQ transport: `skills/sub2api/templates/qq-bot.py`
+- QQ docs: [`skills/sub2api/docs/qq-bot.md`](skills/sub2api/docs/qq-bot.md)
+
+QQ Open Platform v2 endpoints used:
+
+| Purpose | URL |
+| --- | --- |
+| AppAccessToken (auth) | `https://bots.qq.com/app/getAppAccessToken` |
+| OpenAPI (production) | `https://api.sgroup.qq.com/` |
+| OpenAPI (sandbox) | `https://sandbox.api.sgroup.qq.com/` |
+| WebSocket Gateway | `wss://api.sgroup.qq.com/websockets` (auto-discovered via `/gateway`) |
+
+Reference: <https://bot.q.qq.com/wiki/develop/api-v2/>
+
+The QQ backend subscribes to public guild-channel `@` messages, group `@` messages, C2C private messages, and interaction events. Inline-keyboard confirmation UIs require a reviewed keyboard template on the QQ platform, so the QQ backend falls back to the same `/confirm <code>` text confirmation codes as Telegram — control-command safety is identical.
 
 ### Read-only Diagnostics
 
@@ -154,9 +180,11 @@ cp docker/sub2api-skill/sub2api-skill.env.example sub2api-skill/.env
 Edit `sub2api-skill/.env` and set at least:
 
 ```env
+# Choose backend: telegram | qq
+SUB2API_BOT_BACKEND=telegram
+
 SUB2API_BASE_URL=http://127.0.0.1:<sub2api-port>
-SUB2API_BOT_ALLOWED_CHAT_IDS=<telegram-chat-id>
-TELEGRAM_BOT_TOKEN=<telegram-bot-token>
+SUB2API_BOT_ALLOWED_CHAT_IDS=<chat-id>
 SUB2API_ADMIN_EMAIL=<admin-email>
 SUB2API_ADMIN_PASSWORD_B64=<base64-admin-password>
 DATABASE_HOST=127.0.0.1
@@ -168,6 +196,11 @@ SUB2API_DEPLOY_DIR=/sub2api-compose
 SUB2API_IMAGE=weishaw/sub2api:latest
 DOCKER_COMPOSE_CMD=docker compose
 ```
+
+`SUB2API_BOT_BACKEND` selects which backend starts:
+
+- `telegram`: also set `TELEGRAM_BOT_TOKEN=<telegram-bot-token>`; `SUB2API_BOT_ALLOWED_CHAT_IDS` uses Telegram chat IDs.
+- `qq`: also set `QQ_APP_ID=<qq-app-id>` and `QQ_APP_SECRET=<qq-app-secret>` (from [q.qq.com](https://q.qq.com)); `SUB2API_BOT_ALLOWED_CHAT_IDS` uses `channel:<channel_id>` / `group:<group_openid>` / `c2c:<user_openid>` or a bare openid. Set `SUB2API_QQ_SANDBOX=1` for sandbox testing.
 
 If Telegram access requires a proxy, set both upper-case and lower-case proxy variables:
 
@@ -235,7 +268,7 @@ This project does not provide legal, financial, compliance, security, or operati
 
 The templates may perform administrative actions such as restarting services or containers, updating Docker images, importing account credentials into your configured database, and creating local backups. These actions are confirmation-protected where applicable, but you should still restrict bot access, secure environment files, keep backups private, and monitor logs.
 
-All third-party names and trademarks belong to their respective owners. References to Sub2API, OpenAI, Anthropic, Gemini, Telegram, GitHub, Docker, or other services are for interoperability and documentation purposes only.
+All third-party names and trademarks belong to their respective owners. References to Sub2API, OpenAI, Anthropic, Gemini, Telegram, QQ, Tencent, GitHub, Docker, or other services are for interoperability and documentation purposes only.
 
 ## License
 
