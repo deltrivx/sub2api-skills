@@ -70,6 +70,25 @@ Reference: <https://bot.q.qq.com/wiki/develop/api-v2/>
 
 The QQ backend subscribes to public guild-channel `@` messages, group `@` messages, C2C private messages, and interaction events. Inline-keyboard confirmation UIs require a reviewed keyboard template on the QQ platform, so the QQ backend falls back to the same `/confirm <code>` text confirmation codes as Telegram — control-command safety is identical.
 
+### 4.1.1 QQ Bot Sandbox and Usage Scenarios
+
+QQ bots start in the **sandbox environment** (not yet published). You must register test targets under [QQ Open Platform → Sandbox configuration](https://q.qq.com/qqbot/#/developer/sandbox) before the bot can exchange messages with them:
+
+- **Message list (C2C private chat)**: add a member on the sandbox page; the bot then appears in that member's QQ message list and accepts direct commands.
+- **QQ group**: select a test group (admin must be the group owner/admin, ≤ 20 members); the owner adds the bot via "Settings → Group bots".
+- **QQ guild channel**: bind a test channel the same way.
+
+When adding commands under "Function configuration → Commands", the **usage scenario** checkboxes are gated by the sandbox config: any scenario whose target was not configured in the sandbox is disabled (`usescene-item-forbit`) and the command cannot be saved. Configure at least one test member to unlock the "Message list" scenario first.
+
+### 4.1.2 QQ Bot Rich-text Replies
+
+In C2C and group scenarios, the QQ backend prefers **Markdown messages** (`msg_type=9`). Since 2026/04/23, custom Markdown is available to all bots in private/group chats without a separate template approval (see [Markdown message docs](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html)).
+
+- If the first line of a reply looks like a title (a short line ending with `：` or `:`), it is automatically bolded.
+- Long replies are split by paragraph to preserve Markdown structure.
+- If Markdown delivery fails (rate limit, content filtered), the backend falls back to plain text (`msg_type=0`) so reachability is preserved.
+- Guild-channel Markdown requires an invite-gated approval, so the channel backend still uses plain text.
+
 ### Read-only Diagnostics
 
 - `/status` — combined status, usage, limits, and balance

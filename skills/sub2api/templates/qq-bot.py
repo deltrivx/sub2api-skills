@@ -93,30 +93,70 @@ def qq_api(method, path, payload=None, timeout=20, content_type="application/jso
         return {"_raw": raw[:500]}
 
 
-def _chunk_text(text, limit=2000):
-    """QQ 单条消息建议 ≤ 2000 字符，超长分段。"""
+def _chunk_text(text, limit=1800):
+    """按段落切分长文本，尽量不破坏 markdown 结构。
+    QQ markdown 单条建议 < 2000 字符，这里保守用 1800。"""
     if text is None:
         return []
     text = str(text)
     if len(text) <= limit:
         return [text]
+    # 按双换行（段落）切，累积到接近 limit 就输出一段
+    paras = text.split("\n\n")
     parts = []
-    for i in range(0, len(text), limit):
-        # 尽量在换行处切，避免破坏 markdown
-        chunk = text[i:i + limit]
-        parts.append(chunk)
-    return parts
+    cur = ""
+    for p in paras:
+        if len(cur) + len(p) + 2 > limit and cur:
+            parts.append(cur)
+            cur = p
+        else:
+            cur = (cur + "\n\n" + p) if cur else p
+    if cur:
+        parts.append(cur)
+    # 如果单段仍超长（如超长表格/代码块），硬切
+    final = []
+    for p in parts:
+        while len(p) > limit:
+            final.append(p[:limit])
+            p = p[limit:]
+        if p:
+            final.append(p)
+    return final
+
+
+def _to_markdown(text):
+    """把 bot_core 返回的纯文本包装成更友好的 markdown。
+    bot_core 的回复格式：
+      - 标题行（如"账号列表："、"Sub2API 综合状态："）→ 加粗
+      - "- xxx" 列表项 → 保持
+      - "key: value" → 保持
+      - "/cmd - 说明" → 保持
+    这里做一个轻量增强：首行若像标题（以"："结尾或全中文短句）则加粗。"""
+    if not text:
+        return text
+    lines = text.split("\n")
+    out = []
+    first_non_empty = True
+    for line in lines:
+        s = line.strip()
+        # 首个非空行且像标题（≤30 字、以：结尾 或 是命令说明首行）
+        if first_non_empty and s and len(s) <= 40 and (s.endswith("：") or s.endswith(":")):
+            out.append("**" + s + "**")
+            first_non_empty = False
+            continue
+        if first_non_empty and s:
+            first_non_empty = False
+        out.append(line)
+    return "\n".join(out)
 
 
 class QQBackend:
     """实现 bot_core 期望的 Backend 抽象。
-    QQ 频道/群消息按钮通过 msg_id + keyboard 实现，这里采用最简实现：
-    - send_message 立即发送一条文本
-    - buttons="restart" 时附带文字提示（QQ 按钮需审核模板，这里退化为文字）
-    """
+    C2C/群聊优先用 markdown（msg_type=9，2026/04 后对所有机器人开放，无需模板）；
+    频道仍用纯文本（markdown 需内邀）。
+    markdown 发送失败时自动降级为纯文本（msg_type=0）。"""
 
     def __init__(self, channel_id=None, message_id=None):
-        # channel_id 用于"立即提示"场景（cmd_update 开始时）
         self.channel_id = channel_id
         self.message_id = message_id
 
@@ -126,43 +166,93 @@ class QQBackend:
             return None
         suffix = ""
         if buttons == "restart":
-            suffix = "\n（请直接回复：/restart bot 或 /restart sub2api）"
-        elif isinstance(buttons, str) and buttons.startswith("confirm:"):
-            suffix = ""
+            suffix = "\n\n（请直接回复：/restart bot 或 /restart sub2api）"
         full = (text or "") + suffix
-        for part in _chunk_text(full):
-            reply_qq_message(target, part, self.message_id)
+        kind = target.partition(":")[0]
+        # C2C/群聊用 markdown，频道用纯文本
+        use_md = kind in ("c2c", "group")
+        md_content = _to_markdown(full) if use_md else full
+        for i, part in enumerate(_chunk_text(md_content if use_md else full)):
+            # msg_id 只在第一条用（被动回复 5 分钟限制，多段时后续用 event_id 或省略）
+            mid = self.message_id if i == 0 else None
+            if use_md:
+                reply_qq_message(target, part, mid, prefer_markdown=True)
+            else:
+                reply_qq_message(target, part, mid)
         return None
 
     def restart_buttons(self):
         return "restart"
 
 
-def reply_qq_message(channel_id, content, msg_id=None, msg_type=0):
+def reply_qq_message(channel_id, content, msg_id=None, msg_type=0, prefer_markdown=False):
     """回复消息。
-    channel_id 形如 'channel:xxx'（频道子频道）/ 'group:xxx'（群）/ 'c2c:xxx'（私聊）。
-    msg_type: 0=文本, 7=富媒体(需先上传)。"""
+    channel_id 形如 'channel:xxx'（频道）/ 'group:xxx'（群）/ 'c2c:xxx'（私聊）。
+    msg_type: 0=文本, 7=富媒体, 9=markdown。
+    prefer_markdown=True 时 C2C/群聊优先发 markdown，失败降级为纯文本。"""
     if not channel_id:
         return None
     kind, _, oid = channel_id.partition(":")
-    try:
+    # 决定是否尝试 markdown
+    attempt_md = prefer_markdown and kind in ("c2c", "group") and content
+
+    def _build_payload(mt, body):
+        """构造各场景的 payload。mt=消息类型, body=内容(markdown 时放 markdown.content)"""
         if kind == "channel":
-            payload = {"content": content, "msg_id": msg_id} if msg_id else {"content": content}
-            return qq_api("POST", "/channels/%s/messages" % oid, payload)
+            if mt == 9:
+                return {"markdown": {"content": body}, "msg_id": msg_id} if msg_id else {"markdown": {"content": body}}
+            return {"content": body, "msg_id": msg_id} if msg_id else {"content": body}
         if kind == "group":
-            # v2 群消息：必须有 group_openid + msg_type + content；msg_id 用于被动回复
-            payload = {"group_openid": oid, "msg_type": msg_type, "content": content}
+            p = {"group_openid": oid, "msg_type": mt}
+            if mt == 9:
+                p["markdown"] = {"content": body}
+            else:
+                p["content"] = body
             if msg_id:
-                payload["msg_id"] = msg_id
-            return qq_api("POST", "/v2/groups/%s/messages" % oid, payload)
+                p["msg_id"] = msg_id
+            return p
         if kind == "c2c":
-            # v2 C2C：POST /v2/users/{openid}/messages，body 用 {content, msg_type, msg_id, openid}
-            payload = {"content": content, "msg_type": msg_type, "openid": oid}
+            p = {"msg_type": mt}
+            if mt == 9:
+                p["markdown"] = {"content": body}
+                p["openid"] = oid  # markdown 模式仍需 openid
+            else:
+                p["content"] = body
+                p["openid"] = oid
             if msg_id:
-                payload["msg_id"] = msg_id
-            return qq_api("POST", "/v2/users/%s/messages" % oid, payload)
+                p["msg_id"] = msg_id
+            return p
+        return None
+
+    # 尝试 markdown
+    if attempt_md:
+        try:
+            payload = _build_payload(9, content)
+            if payload:
+                resp = qq_api("POST", _endpoint_for(kind, oid), payload)
+                # QQ markdown 成功通常返回 200 + 消息体；某些情况下返回 {code:0,...}
+                if resp is not None:
+                    return resp
+        except Exception as e:
+            log("markdown send failed, fallback to text:", type(e).__name__, str(e)[:150])
+
+    # 降级/默认：纯文本
+    try:
+        payload = _build_payload(0, content)
+        if payload:
+            return qq_api("POST", _endpoint_for(kind, oid), payload)
     except Exception as e:
         log("reply_qq_message FAILED", kind, "oid=", oid[:16], type(e).__name__, str(e)[:250])
+    return None
+
+
+def _endpoint_for(kind, oid):
+    if kind == "channel":
+        return "/channels/%s/messages" % oid
+    if kind == "group":
+        return "/v2/groups/%s/messages" % oid
+    if kind == "c2c":
+        return "/v2/users/%s/messages" % oid
     return None
 
 

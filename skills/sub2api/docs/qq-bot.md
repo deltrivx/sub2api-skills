@@ -69,6 +69,18 @@ QQ Bot uses the same command set as the Telegram bot. In channels / groups, ment
 - The QQ bot subscribes to `PUBLIC_GUILD_MESSAGES` (1<<30), `GROUP_AT_MESSAGE` (1<<25), `INTERACTION` (1<<26) and `DIRECT_MESSAGE` (1<<12) intents. Intents requiring private-domain approval (e.g. all-channel message content) are intentionally **not** subscribed by default.
 - Button-based confirm/restart UIs require a reviewed keyboard template on the QQ platform. The QQ backend falls back to text-based confirmation codes (`/confirm <code>`), so the confirmation-protected controls remain safe.
 - File/account import over QQ requires a media-upload flow (`msg_type=7`); the current template focuses on the command surface and will reject unsupported attachments with a clear message.
+- **Rich text**: in C2C and group scenarios the backend prefers Markdown messages (`msg_type=9`, available to all bots since 2026/04/23 without a separate template). The first line is auto-bolded when it looks like a title (short line ending with `：`/`:`). Long replies are split by paragraph. If Markdown delivery fails, it falls back to plain text (`msg_type=0`). Guild channels still use plain text (Markdown requires an invite-gated approval there).
+- **WebSocket stability**: the gateway client uses TCP keepalive and preserves any bytes received after the HTTP `101` handshake so the first WebSocket frame is not truncated. Heartbeats are sent in a background thread.
+
+## Sandbox and Usage Scenarios
+
+QQ bots start in the **sandbox environment**. Before the bot can exchange messages, register test targets on the [Sandbox configuration](https://q.qq.com/qqbot/#/developer/sandbox) page:
+
+- **Message list (C2C)**: add a test member; the bot appears in their QQ message list.
+- **QQ group**: bind a test group (admin must be owner/admin, ≤ 20 members).
+- **QQ guild channel**: bind a test channel.
+
+When adding commands under "Function configuration → Commands", the **usage scenario** checkboxes are gated by the sandbox config: a scenario whose target was not configured in the sandbox is disabled (`usescene-item-forbit`) and the command cannot be saved. Configure at least one test member first to unlock the "Message list" scenario.
 
 ## Account Import
 
