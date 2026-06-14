@@ -131,21 +131,30 @@ def setup_bot_menu():
         {"command": k[1:], "description": v} for k, v in COMMANDS.items() if k != "/help"
     ]
     tg_call("deleteWebhook", {"drop_pending_updates": False})
+    # 双后端兼容：ALLOWED_CHAT_IDS 可能同时含 Telegram 数字 chat_id 和 QQ openid（非数字）。
+    # Telegram API 只接受数字 chat_id，非数字的（QQ openid）必须跳过，否则 400 Bad Request。
+    tg_chat_ids = [c for c in ALLOWED_CHAT_IDS if str(c).isdigit()]
     scopes = [
         {"type": "default"},
         {"type": "all_private_chats"},
-    ] + [{"type": "chat", "chat_id": int(chat_id) if str(chat_id).isdigit() else chat_id} for chat_id in ALLOWED_CHAT_IDS]
+    ] + [{"type": "chat", "chat_id": int(chat_id)} for chat_id in tg_chat_ids]
     for scope in scopes:
         for payload in ({"commands": commands, "scope": scope}, {"commands": commands, "scope": scope, "language_code": "zh"}):
             try:
                 tg_call("setMyCommands", payload)
             except Exception as e:
                 log("setMyCommands failed", scope, type(e).__name__, str(e)[:120])
-    tg_call("setMyDescription", {"description": "Sub2API 助手：精简命令，覆盖状态、账号、模型、渠道、令牌、导入、备份、调试和更新。"})
-    tg_call("setMyShortDescription", {"short_description": "Sub2API 管理助手"})
-    tg_call("setChatMenuButton", {"menu_button": {"type": "commands"}})
-    for chat_id in ALLOWED_CHAT_IDS:
-        tg_call("setChatMenuButton", {"chat_id": int(chat_id) if str(chat_id).isdigit() else chat_id, "menu_button": {"type": "commands"}})
+    try:
+        tg_call("setMyDescription", {"description": "Sub2API 助手：精简命令，覆盖状态、账号、模型、渠道、令牌、导入、备份、调试和更新。"})
+        tg_call("setMyShortDescription", {"short_description": "Sub2API 管理助手"})
+        tg_call("setChatMenuButton", {"menu_button": {"type": "commands"}})
+    except Exception as e:
+        log("setDescription/ShortDescription/MenuButton failed", type(e).__name__, str(e)[:120])
+    for chat_id in tg_chat_ids:
+        try:
+            tg_call("setChatMenuButton", {"chat_id": int(chat_id), "menu_button": {"type": "commands"}})
+        except Exception as e:
+            log("setChatMenuButton failed", chat_id, type(e).__name__, str(e)[:100])
 
 
 def cmd_restart_select(target, chat_id):

@@ -82,12 +82,29 @@ When adding commands under "Function configuration → Commands", the **usage sc
 
 ### 4.1.2 QQ Bot Rich-text Replies
 
-In C2C and group scenarios, the QQ backend prefers **Markdown messages** (`msg_type=9`). Since 2026/04/23, custom Markdown is available to all bots in private/group chats without a separate template approval (see [Markdown message docs](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html)).
+In C2C and group scenarios, the QQ backend prefers **Markdown messages** (`msg_type=2`). Since 2026/04/23, custom Markdown is available to all bots in private/group chats without a separate template approval (see [Markdown message docs](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html)).
 
 - If the first line of a reply looks like a title (a short line ending with `：` or `:`), it is automatically bolded.
 - Long replies are split by paragraph to preserve Markdown structure.
 - If Markdown delivery fails (rate limit, content filtered), the backend falls back to plain text (`msg_type=0`) so reachability is preserved.
 - Guild-channel Markdown requires an invite-gated approval, so the channel backend still uses plain text.
+
+### 4.1.3 Dual-backend Mode (QQ + Telegram simultaneously)
+
+Set `SUB2API_BOT_BACKEND=both` to run **both the QQ Bot and the Telegram Bot in a single container**, sharing the same `bot_core.py` business logic and Sub2API backend.
+
+How it works:
+
+- In `both` mode, `entrypoint.sh` launches `sub2api_qq_bot.py` and `sub2api_telegram_bot.py` as two background processes.
+- **Fault tolerance**: either process exiting does not immediately kill the other. For example, if Telegram exits due to a network issue, QQ keeps serving, and vice versa. The container only restarts (`restart: always`) when both processes have exited.
+- `SUB2API_BOT_SECRETS_FILE` in `both` mode contains both `qq_app_id`/`qq_app_secret` and `telegram_bot_token`.
+- The whitelist `SUB2API_BOT_ALLOWED_CHAT_IDS` lists both kinds of IDs, comma-separated. Telegram's `setup_bot_menu` automatically skips non-numeric QQ openids, avoiding 400 errors against the Telegram API.
+
+Use cases:
+
+- Cover both QQ and Telegram users from a single container, reducing resource usage.
+- Commands are identical on both sides (`/help`, `/status`, `/accounts`, …) because they share `bot_core.py`.
+- Single-backend mode (`telegram` or `qq`) is still available if you only need one.
 
 ### Read-only Diagnostics
 
@@ -199,7 +216,7 @@ cp docker/sub2api-skill/sub2api-skill.env.example sub2api-skill/.env
 Edit `sub2api-skill/.env` and set at least:
 
 ```env
-# Choose backend: telegram | qq
+# Choose backend: telegram | qq | both
 SUB2API_BOT_BACKEND=telegram
 
 SUB2API_BASE_URL=http://127.0.0.1:<sub2api-port>
@@ -220,6 +237,7 @@ DOCKER_COMPOSE_CMD=docker compose
 
 - `telegram`: also set `TELEGRAM_BOT_TOKEN=<telegram-bot-token>`; `SUB2API_BOT_ALLOWED_CHAT_IDS` uses Telegram chat IDs.
 - `qq`: also set `QQ_APP_ID=<qq-app-id>` and `QQ_APP_SECRET=<qq-app-secret>` (from [q.qq.com](https://q.qq.com)); `SUB2API_BOT_ALLOWED_CHAT_IDS` uses `channel:<channel_id>` / `group:<group_openid>` / `c2c:<user_openid>` or a bare openid. Set `SUB2API_QQ_SANDBOX=1` for sandbox testing.
+- `both`: runs Telegram + QQ simultaneously in one container (see section 4.1.3). Set both `TELEGRAM_BOT_TOKEN` and `QQ_APP_ID`/`QQ_APP_SECRET`; `SUB2API_BOT_ALLOWED_CHAT_IDS` is a comma-separated list of Telegram numeric chat IDs and QQ openids (e.g. `8646289271,72A938D331BF51525291207DE760F5FD`).
 
 If Telegram access requires a proxy, set both upper-case and lower-case proxy variables:
 

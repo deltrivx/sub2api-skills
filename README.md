@@ -82,12 +82,29 @@ QQ 机器人默认处于**沙箱环境**（未发布上线），需要在 [QQ �
 
 ### 4.7、QQ Bot 富文本回复
 
-QQ Bot 在 C2C 私聊和群聊场景下，回复优先使用 **Markdown 消息**（`msg_type=9`）。自 2026/04/23 起，单聊/群聊的自定义 Markdown 已对所有机器人开放，无需单独申请模板（参考 [Markdown 消息文档](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html)）。
+QQ Bot 在 C2C 私聊和群聊场景下，回复优先使用 **Markdown 消息**（`msg_type=2`）。自 2026/04/23 起，单聊/群聊的自定义 Markdown 已对所有机器人开放，无需单独申请模板（参考 [Markdown 消息文档](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html)）。
 
 - 回复内容的首行若像标题（以"："结尾的短句），会自动加粗。
 - 长回复按段落切分，避免破坏 Markdown 结构。
 - 若 Markdown 发送失败（如命中频控、内容被拦截），自动降级为纯文本（`msg_type=0`），保证可达性。
 - 频道场景的 Markdown 需要内邀开通，因此频道后端仍使用纯文本。
+
+### 4.8、双后端模式（QQ + Telegram 同时运行）
+
+设置 `SUB2API_BOT_BACKEND=both` 可以在**单个容器内同时运行 QQ Bot 和 Telegram Bot**，共享同一份 `bot_core.py` 业务逻辑和 Sub2API 后端。
+
+工作方式：
+
+- `entrypoint.sh` 在 `both` 模式下后台启动 `sub2api_qq_bot.py` 和 `sub2api_telegram_bot.py` 两个进程。
+- **容错**：任一进程退出不会立即拖垮另一个。例如 Telegram 因网络问题退出时，QQ 继续服务；反之亦然。只有两个进程都退出时容器才会重启（`restart: always`）。
+- `SUB2API_BOT_SECRETS_FILE` 在 `both` 模式下同时包含 `qq_app_id`/`qq_app_secret` 和 `telegram_bot_token`。
+- 白名单 `SUB2API_BOT_ALLOWED_CHAT_IDS` 同时列出两类 id，逗号分隔。Telegram 的 `setup_bot_menu` 会自动跳过非数字的 QQ openid，避免对 Telegram API 产生 400 错误。
+
+适用场景：
+
+- 希望一个容器同时覆盖 QQ 和 Telegram 用户，减少资源占用。
+- 两边命令完全一致（`/help`、`/status`、`/accounts` 等），因为共享 `bot_core.py`。
+- 若只想要单一后端，仍可使用 `telegram` 或 `qq`。
 
 ### 查询与诊断
 
@@ -211,7 +228,7 @@ cp docker/sub2api-skill/sub2api-skill.env.example sub2api-skill/.env
 编辑 `sub2api-skill/.env`，至少配置：
 
 ```env
-# 选择后端：telegram | qq
+# 选择后端：telegram | qq | both
 SUB2API_BOT_BACKEND=telegram
 
 SUB2API_BASE_URL=http://127.0.0.1:<sub2api-port>
@@ -232,6 +249,7 @@ DOCKER_COMPOSE_CMD=docker compose
 
 - `telegram`：还需要 `TELEGRAM_BOT_TOKEN=<telegram-bot-token>`，`SUB2API_BOT_ALLOWED_CHAT_IDS` 用 Telegram chat_id。
 - `qq`：还需要 `QQ_APP_ID=<qq-app-id>` 和 `QQ_APP_SECRET=<qq-app-secret>`（在 [q.qq.com](https://q.qq.com) 创建机器人后获取），`SUB2API_BOT_ALLOWED_CHAT_IDS` 用 `channel:<channel_id>` / `group:<group_openid>` / `c2c:<user_openid>` 或裸 openid。沙箱调试可设 `SUB2API_QQ_SANDBOX=1`。
+- `both`：同时运行 Telegram + QQ 双后端（详见 4.8 节）。需要同时配置 `TELEGRAM_BOT_TOKEN` 和 `QQ_APP_ID`/`QQ_APP_SECRET`，`SUB2API_BOT_ALLOWED_CHAT_IDS` 用逗号分隔列出 Telegram 数字 chat_id 和 QQ openid（如 `8646289271,72A938D331BF51525291207DE760F5FD`）。
 
 如果 Telegram 访问需要代理，可以同时配置：
 

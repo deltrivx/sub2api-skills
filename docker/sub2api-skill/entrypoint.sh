@@ -47,14 +47,13 @@ path.chmod(0o600)
 PY
       ;;
     both)
-      # both 模式：secrets 同时含 QQ + Telegram 字段
+      # both 模式：secrets 同时含 QQ + Telegram 字段。
+      # 容错：QQ 和 Telegram 凭据任一缺失不致命（只警告），让可用后端继续启动。
       if [ -z "${QQ_APP_ID:-}" ] || [ -z "${QQ_APP_SECRET:-}" ]; then
-        echo "[both] Missing QQ_APP_ID/QQ_APP_SECRET" >&2
-        exit 1
+        echo "[both] WARNING: QQ_APP_ID/QQ_APP_SECRET missing — QQ backend will fail but Telegram continues" >&2
       fi
       if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-        echo "[both] Missing TELEGRAM_BOT_TOKEN" >&2
-        exit 1
+        echo "[both] WARNING: TELEGRAM_BOT_TOKEN missing — Telegram backend will fail but QQ continues" >&2
       fi
       python3 - <<'PY'
 import json, os, pathlib
@@ -88,10 +87,10 @@ case "${BACKEND}" in
   qq|qqbot)
     exec python3 /app/sub2api_qq_bot.py
     ;;
-  both)
+    both)
     # 双后端模式：同时启动 QQ 和 Telegram 两个进程。
-    # 用 wait -n 等任一进程退出，然后整体退出（容器重启策略会拉起）。
-    # 注意：POSIX sh 不支持 wait -n，busybox sh 也不一定支持，这里用 trap + 后台 PID。
+    # 容错策略：任一进程退出不立即杀另一个 —— 让存活的后端继续服务。
+    # 容器只在两个进程都退出（或收到外部信号）时才退出。
     echo "[entrypoint] launching QQ backend..."
     python3 /app/sub2api_qq_bot.py &
     QQ_PID=$!
@@ -105,20 +104,21 @@ case "${BACKEND}" in
     # 信号转发：收到 SIGTERM/SIGINT 时杀掉两个子进程
     trap 'echo "[entrypoint] received signal, stopping both backends"; kill ${QQ_PID} ${TG_PID} 2>/dev/null; exit 0' TERM INT
 
-    # 等待任一进程退出
-    while kill -0 ${QQ_PID} 2>/dev/null && kill -0 ${TG_PID} 2>/dev/null; do
-      sleep 2
+    # 等待两个进程都退出。任一退出时只记录日志，不杀另一个。
+    qq_alive=1
+    tg_alive=1
+    while [ $qq_alive -eq 1 ] || [ $tg_alive -eq 1 ]; do
+      sleep 3
+      if [ $qq_alive -eq 1 ] && ! kill -0 ${QQ_PID} 2>/dev/null; then
+        echo "[entrypoint] QQ backend exited (telegram continues if alive)"
+        qq_alive=0
+      fi
+      if [ $tg_alive -eq 1 ] && ! kill -0 ${TG_PID} 2>/dev/null; then
+        echo "[entrypoint] Telegram backend exited (qq continues if alive)"
+        tg_alive=0
+      fi
     done
-
-    # 有一个挂了，杀掉另一个并退出（容器 restart=always 会重启）
-    if ! kill -0 ${QQ_PID} 2>/dev/null; then
-      echo "[entrypoint] QQ backend exited, stopping Telegram"
-    else
-      echo "[entrypoint] Telegram backend exited, stopping QQ"
-    fi
-    kill ${QQ_PID} ${TG_PID} 2>/dev/null || true
-    wait ${QQ_PID} ${TG_PID} 2>/dev/null || true
-    echo "[entrypoint] both backends stopped, container will restart"
+    echo "[entrypoint] both backends exited, container will restart"
     exit 1
     ;;
   *)
