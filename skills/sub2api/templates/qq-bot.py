@@ -258,15 +258,18 @@ def _ws_connect(url):
         sock.sendall(header + masked)
 
     def ws_recv():
-        """读取一帧（不支持分片重组的极简版，QQ 心跳/事件 payload < 64KB）。
-        socket.timeout 时返回 b"" (哨兵：临时无数据，非断连)；真断开返回 None。"""
+        """读取一帧。socket 完全无数据 timeout 时返回 b"" (哨兵)；
+        真断开返回 None。读了一半 timeout 会继续读完，保证帧边界。"""
         def _exact(n):
             data = b""
             while len(data) < n:
                 try:
                     chunk = sock.recv(n - len(data))
                 except socket.timeout:
-                    raise  # 让上层 ws_recv 捕获并返回哨兵
+                    if not data:
+                        raise  # 完全没读到，让上层返回哨兵
+                    # 已读到部分数据，重置 timeout 继续读完
+                    continue
                 if not chunk:
                     return None
                 data += chunk
@@ -274,7 +277,7 @@ def _ws_connect(url):
         try:
             h = _exact(2)
         except socket.timeout:
-            return b""  # 哨兵：暂时无数据
+            return b""  # 哨兵：完全无数据
         if not h:
             return None
         h = _exact(2)
@@ -448,7 +451,6 @@ def main():
                     raise RuntimeError("gateway closed before hello")
                 # b"" 哨兵 = 临时超时，继续等
             hello = json.loads(hello_raw.decode())
-            hello = json.loads(hello_raw.decode())
             heartbeat_interval = (hello.get("d") or {}).get("heartbeat_interval", 30000)
             log("hello heartbeat_interval", heartbeat_interval)
 
@@ -480,7 +482,11 @@ def main():
                 if raw == b"":
                     # 哨兵：socket read timeout，临时无数据，继续等下一帧（非断连）
                     continue
-                payload = json.loads(raw.decode(errors="replace"))
+                try:
+                    payload = json.loads(raw.decode(errors="replace"))
+                except Exception as e:
+                    log("ws frame json parse error", type(e).__name__, "len=", len(raw), "head=", raw[:40])
+                    continue
                 op = payload.get("op")
                 if "s" in payload and payload.get("s") is not None:
                     last_seq[0] = payload.get("s")
