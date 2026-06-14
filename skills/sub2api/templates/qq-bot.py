@@ -216,16 +216,45 @@ def _ws_connect(url):
         "\r\n"
     ) % (path, host, key)
     sock.sendall(req.encode())
-    # 读取握手响应头
+    # 读取握手响应头。注意：握手响应 + 后续 WebSocket 帧可能在同一次 recv 里返回，
+    # 必须保留 \r\n\r\n 之后的剩余字节作为 ws_recv 的预读缓冲，否则会丢失第一帧前段。
     buf = b""
     while b"\r\n\r\n" not in buf:
         chunk = sock.recv(4096)
         if not chunk:
             raise RuntimeError("ws handshake closed")
         buf += chunk
-    header, _ = buf.split(b"\r\n\r\n", 1)
+    header, leftover = buf.split(b"\r\n\r\n", 1)
     if b" 101 " not in header.split(b"\r\n")[0]:
         raise RuntimeError("ws handshake failed: " + header.decode(errors="replace")[:200])
+    # leftover 是握手响应之后已读到的 WebSocket 帧起始字节，预存到 _pread
+    _pread = [leftover]
+
+    # 启用 TCP keepalive，避免长连接被中间设备/服务端判定为空闲而断开。
+    # 不设 read timeout —— 让 ws_recv 阻塞等待，心跳线程独立维持连接活性。
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+    except Exception:
+        pass
+    sock.settimeout(None)  # 阻塞模式，靠 keepalive + 心跳维持
+
+    def _recv_exact(n):
+        """先消费 _pread 预读缓冲，不够再从 socket 读。"""
+        out = b""
+        if _pread[0]:
+            take = _pread[0][:n]
+            _pread[0] = _pread[0][len(take):]
+            out = take
+        while len(out) < n:
+            chunk = sock.recv(n - len(out))
+            if not chunk:
+                return None
+            out += chunk
+        return out
 
     # 启用 TCP keepalive，避免长连接被中间设备/服务端判定为空闲而断开。
     # 不设 read timeout —— 让 ws_recv 阻塞等待，心跳线程独立维持连接活性。
@@ -258,18 +287,7 @@ def _ws_connect(url):
 
     def ws_recv():
         """读取一帧（不支持分片重组，QQ 心跳/事件 payload < 64KB）。"""
-        def _exact(n):
-            data = b""
-            while len(data) < n:
-                chunk = sock.recv(n - len(data))
-                if not chunk:
-                    return None
-                data += chunk
-            return data
-        h = _exact(2)
-        if not h:
-            return None
-        h = _exact(2)
+        h = _recv_exact(2)
         if not h:
             return None
         b1, b2 = h[0], h[1]
@@ -277,13 +295,13 @@ def _ws_connect(url):
         masked = bool(b2 & 0x80)
         length = b2 & 0x7F
         if length == 126:
-            ext = _exact(2)
+            ext = _recv_exact(2)
             length = struct.unpack(">H", ext)[0]
         elif length == 127:
-            ext = _exact(8)
+            ext = _recv_exact(8)
             length = struct.unpack(">Q", ext)[0]
-        mask = _exact(4) if masked else b""
-        payload = _exact(length) if length else b""
+        mask = _recv_exact(4) if masked else b""
+        payload = _recv_exact(length) if length else b""
         if masked and payload:
             payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
         if opcode == 0x9:  # ping
