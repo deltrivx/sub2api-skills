@@ -74,7 +74,7 @@ def qq_api(method, path, payload=None, timeout=20, content_type="application/jso
     token = _get_app_access_token()
     url = OPENAPI_BASE + path
     data = None
-    headers = {"Authorization": "QQ " + token}
+    headers = {"Authorization": "QQBot " + token}
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode()
         headers["Content-Type"] = content_type
@@ -303,7 +303,7 @@ def _identify(ws_send):
     payload = {
         "op": 2,
         "d": {
-            "token": "QQ " + token,
+            "token": "QQBot " + token,
             "intents": _intents(),
             "shard": [0, 1],
             "properties": {
