@@ -145,28 +145,24 @@ def reply_qq_message(channel_id, content, msg_id=None, msg_type=0):
     if not channel_id:
         return None
     kind, _, oid = channel_id.partition(":")
-    payload = {"content": content, "msg_type": msg_type}
-    if msg_id:
-        payload["msg_id"] = msg_id
     try:
         if kind == "channel":
+            payload = {"content": content, "msg_id": msg_id} if msg_id else {"content": content}
             return qq_api("POST", "/channels/%s/messages" % oid, payload)
         if kind == "group":
-            payload["group_openid"] = oid
-            payload.pop("msg_id", None)
+            # v2 群消息：必须有 group_openid + msg_type + content；msg_id 用于被动回复
+            payload = {"group_openid": oid, "msg_type": msg_type, "content": content}
             if msg_id:
                 payload["msg_id"] = msg_id
-            payload["content"] = content
             return qq_api("POST", "/v2/groups/%s/messages" % oid, payload)
         if kind == "c2c":
-            payload["openid"] = oid  # v2 接口使用 user_openid
-            payload.pop("msg_id", None)
+            # v2 C2C：POST /v2/users/{openid}/messages，body 用 {content, msg_type, msg_id, openid}
+            payload = {"content": content, "msg_type": msg_type, "openid": oid}
             if msg_id:
                 payload["msg_id"] = msg_id
-            payload["content"] = content
             return qq_api("POST", "/v2/users/%s/messages" % oid, payload)
     except Exception as e:
-        log("reply_qq_message failed", channel_id, type(e).__name__, str(e)[:200])
+        log("reply_qq_message FAILED", kind, "oid=", oid[:16], type(e).__name__, str(e)[:250])
     return None
 
 
@@ -231,6 +227,20 @@ def _ws_connect(url):
     if b" 101 " not in header.split(b"\r\n")[0]:
         raise RuntimeError("ws handshake failed: " + header.decode(errors="replace")[:200])
 
+    # 启用 TCP keepalive，避免长连接被中间设备/服务端判定为空闲而断开
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+    except Exception:
+        pass
+    # 设置 socket read timeout：比心跳间隔略长，让 ws_recv 在无数据时抛 socket.timeout
+    # 而不是永久阻塞；事件循环捕获后继续 recv（不算断连）。
+    sock.settimeout(60)
+
+
     def ws_send(payload, opcode=0x1):
         if isinstance(payload, str):
             payload = payload.encode()
@@ -248,15 +258,25 @@ def _ws_connect(url):
         sock.sendall(header + masked)
 
     def ws_recv():
-        """读取一帧（不支持分片重组的极简版，QQ 心跳/事件 payload < 64KB）。"""
+        """读取一帧（不支持分片重组的极简版，QQ 心跳/事件 payload < 64KB）。
+        socket.timeout 时返回 b"" (哨兵：临时无数据，非断连)；真断开返回 None。"""
         def _exact(n):
             data = b""
             while len(data) < n:
-                chunk = sock.recv(n - len(data))
+                try:
+                    chunk = sock.recv(n - len(data))
+                except socket.timeout:
+                    raise  # 让上层 ws_recv 捕获并返回哨兵
                 if not chunk:
                     return None
                 data += chunk
             return data
+        try:
+            h = _exact(2)
+        except socket.timeout:
+            return b""  # 哨兵：暂时无数据
+        if not h:
+            return None
         h = _exact(2)
         if not h:
             return None
@@ -347,9 +367,8 @@ def _dispatch(payload, ws_send):
 
 def _handle_message_event(event_type, d):
     """处理收到的消息事件，路由到 bot_core。"""
-    content = (d.get("content") or "").strip()
-    # 去掉 @机器人 前缀（QQ 频道是 <@!bot_id>，群是 <qqbot-at-user id="..." />）
-    content = _strip_at_mention(content)
+    raw_content = (d.get("content") or "").strip()
+    content = _strip_at_mention(raw_content)
     msg_id = d.get("id") or d.get("message_id") or ""
 
     if event_type in ("AT_MESSAGE", "AT_MESSAGE_CREATE"):
@@ -363,25 +382,36 @@ def _handle_message_event(event_type, d):
         author = d.get("author") or {}
         user_id = author.get("member_openid") or author.get("id") or ""
     elif event_type == "C2C_MESSAGE_CREATE":
-        user_openid = d.get("author") and d["author"].get("user_openid") or d.get("user_openid") or ""
+        author = d.get("author") or {}
+        user_openid = author.get("user_openid") or d.get("user_openid") or ""
         target = "c2c:" + user_openid
         user_id = user_openid
     else:
         return
 
-    # 白名单校验：channel_id / group_openid / user_openid 任一在白名单即可
+    log("msg event", event_type, "target=", target, "user=", user_id[:16], "content=", repr(content[:60]), "msg_id=", msg_id[:24])
+
+    # 白名单校验
     if ALLOWED_CHAT_IDS and target not in ALLOWED_CHAT_IDS and user_id not in ALLOWED_CHAT_IDS:
         log("ignore unauthorized qq chat", target, user_id)
         return
 
-    # 只处理命令（以 / 开头）。非命令文本忽略。
+    # 只处理命令（以 / 开头）
     if not content.startswith("/"):
+        log("skip non-command:", repr(content[:40]))
         return
 
     backend = QQBackend(target, msg_id)
-    reply = handle_command(content, target, backend)
+    try:
+        reply = handle_command(content, target, backend)
+    except Exception as e:
+        log("handle_command error", type(e).__name__, str(e)[:200])
+        reply = "执行失败：" + type(e).__name__ + ": " + str(e)[:300]
     if reply:
+        log("sending reply, len=", len(reply))
         backend.send_message(target, reply)
+    else:
+        log("no reply returned from handle_command")
 
 
 def _strip_at_mention(text):
@@ -410,10 +440,14 @@ def main():
             log("connecting qq gateway", gateway)
             sock, ws_send, ws_recv = _ws_connect(gateway)
 
-            # 1) Hello (op=10)
-            hello_raw = ws_recv()
-            if not hello_raw:
-                raise RuntimeError("gateway closed before hello")
+            # 1) Hello (op=10) - 等待服务端首帧，跳过 timeout 哨兵
+            hello_raw = b""
+            while not hello_raw:
+                hello_raw = ws_recv()
+                if hello_raw is None:
+                    raise RuntimeError("gateway closed before hello")
+                # b"" 哨兵 = 临时超时，继续等
+            hello = json.loads(hello_raw.decode())
             hello = json.loads(hello_raw.decode())
             heartbeat_interval = (hello.get("d") or {}).get("heartbeat_interval", 30000)
             log("hello heartbeat_interval", heartbeat_interval)
@@ -431,7 +465,6 @@ def main():
                         break
                     try:
                         _send_heartbeat(ws_send, last_seq[0])
-                        log("heartbeat sent")
                     except Exception as e:
                         log("heartbeat error", type(e).__name__, str(e)[:120])
                         return
@@ -444,6 +477,9 @@ def main():
                 raw = ws_recv()
                 if raw is None:
                     raise RuntimeError("gateway connection closed")
+                if raw == b"":
+                    # 哨兵：socket read timeout，临时无数据，继续等下一帧（非断连）
+                    continue
                 payload = json.loads(raw.decode(errors="replace"))
                 op = payload.get("op")
                 if "s" in payload and payload.get("s") is not None:
@@ -451,7 +487,7 @@ def main():
                 if op == 0:  # Dispatch
                     _dispatch(payload, ws_send)
                 elif op == 11:  # Heartbeat ACK
-                    log("heartbeat ack")
+                    pass  # 心跳 ack 不打印，减少日志噪音
                 elif op == 10:  # Re Hello (不应出现)
                     pass
                 elif op == 9:  # Invalid Session -> re-identify
