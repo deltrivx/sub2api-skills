@@ -152,7 +152,7 @@ def _to_markdown(text):
 
 class QQBackend:
     """实现 bot_core 期望的 Backend 抽象。
-    C2C/群聊优先用 markdown（msg_type=9，2026/04 后对所有机器人开放，无需模板）；
+    C2C/群聊优先用 markdown（msg_type=2，2026/04 后对所有机器人开放，无需模板）；
     频道仍用纯文本（markdown 需内邀）。
     markdown 发送失败时自动降级为纯文本（msg_type=0）。"""
 
@@ -185,26 +185,35 @@ class QQBackend:
         return "restart"
 
 
-def reply_qq_message(channel_id, content, msg_id=None, msg_type=0, prefer_markdown=False):
+# QQ 消息类型常量
+MSG_TYPE_TEXT = 0
+MSG_TYPE_MARKDOWN = 2  # markdown（自定义 content，2026/04 后单聊/群聊对所有机器人开放）
+MSG_TYPE_RICH_MEDIA = 7
+MSG_TYPE_ARK = 9  # ark 方块消息
+
+
+def reply_qq_message(channel_id, content, msg_id=None, msg_type=MSG_TYPE_TEXT, prefer_markdown=False):
     """回复消息。
     channel_id 形如 'channel:xxx'（频道）/ 'group:xxx'（群）/ 'c2c:xxx'（私聊）。
-    msg_type: 0=文本, 7=富媒体, 9=markdown。
-    prefer_markdown=True 时 C2C/群聊优先发 markdown，失败降级为纯文本。"""
+    prefer_markdown=True 时 C2C/群聊优先发 markdown(msg_type=2)，失败降级为纯文本(msg_type=0)。"""
     if not channel_id:
         return None
     kind, _, oid = channel_id.partition(":")
-    # 决定是否尝试 markdown
     attempt_md = prefer_markdown and kind in ("c2c", "group") and content
 
     def _build_payload(mt, body):
-        """构造各场景的 payload。mt=消息类型, body=内容(markdown 时放 markdown.content)"""
+        """构造各场景 payload。mt=消息类型, body=内容(markdown 时放 markdown.content)"""
         if kind == "channel":
-            if mt == 9:
-                return {"markdown": {"content": body}, "msg_id": msg_id} if msg_id else {"markdown": {"content": body}}
-            return {"content": body, "msg_id": msg_id} if msg_id else {"content": body}
+            if mt == MSG_TYPE_MARKDOWN:
+                base = {"markdown": {"content": body}}
+            else:
+                base = {"content": body}
+            if msg_id:
+                base["msg_id"] = msg_id
+            return base
         if kind == "group":
             p = {"group_openid": oid, "msg_type": mt}
-            if mt == 9:
+            if mt == MSG_TYPE_MARKDOWN:
                 p["markdown"] = {"content": body}
             else:
                 p["content"] = body
@@ -212,25 +221,22 @@ def reply_qq_message(channel_id, content, msg_id=None, msg_type=0, prefer_markdo
                 p["msg_id"] = msg_id
             return p
         if kind == "c2c":
-            p = {"msg_type": mt}
-            if mt == 9:
+            p = {"msg_type": mt, "openid": oid}
+            if mt == MSG_TYPE_MARKDOWN:
                 p["markdown"] = {"content": body}
-                p["openid"] = oid  # markdown 模式仍需 openid
             else:
                 p["content"] = body
-                p["openid"] = oid
             if msg_id:
                 p["msg_id"] = msg_id
             return p
         return None
 
-    # 尝试 markdown
+    # 尝试 markdown（msg_type=2）
     if attempt_md:
         try:
-            payload = _build_payload(9, content)
+            payload = _build_payload(MSG_TYPE_MARKDOWN, content)
             if payload:
                 resp = qq_api("POST", _endpoint_for(kind, oid), payload)
-                # QQ markdown 成功通常返回 200 + 消息体；某些情况下返回 {code:0,...}
                 if resp is not None:
                     return resp
         except Exception as e:
@@ -238,7 +244,7 @@ def reply_qq_message(channel_id, content, msg_id=None, msg_type=0, prefer_markdo
 
     # 降级/默认：纯文本
     try:
-        payload = _build_payload(0, content)
+        payload = _build_payload(MSG_TYPE_TEXT, content)
         if payload:
             return qq_api("POST", _endpoint_for(kind, oid), payload)
     except Exception as e:
