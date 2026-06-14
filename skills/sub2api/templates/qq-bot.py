@@ -227,7 +227,8 @@ def _ws_connect(url):
     if b" 101 " not in header.split(b"\r\n")[0]:
         raise RuntimeError("ws handshake failed: " + header.decode(errors="replace")[:200])
 
-    # 启用 TCP keepalive，避免长连接被中间设备/服务端判定为空闲而断开
+    # 启用 TCP keepalive，避免长连接被中间设备/服务端判定为空闲而断开。
+    # 不设 read timeout —— 让 ws_recv 阻塞等待，心跳线程独立维持连接活性。
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         if hasattr(socket, "TCP_KEEPIDLE"):
@@ -236,9 +237,7 @@ def _ws_connect(url):
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
     except Exception:
         pass
-    # 设置 socket read timeout：比心跳间隔略长，让 ws_recv 在无数据时抛 socket.timeout
-    # 而不是永久阻塞；事件循环捕获后继续 recv（不算断连）。
-    sock.settimeout(60)
+    sock.settimeout(None)  # 阻塞模式，靠 keepalive + 心跳维持
 
 
     def ws_send(payload, opcode=0x1):
@@ -258,26 +257,16 @@ def _ws_connect(url):
         sock.sendall(header + masked)
 
     def ws_recv():
-        """读取一帧。socket 完全无数据 timeout 时返回 b"" (哨兵)；
-        真断开返回 None。读了一半 timeout 会继续读完，保证帧边界。"""
+        """读取一帧（不支持分片重组，QQ 心跳/事件 payload < 64KB）。"""
         def _exact(n):
             data = b""
             while len(data) < n:
-                try:
-                    chunk = sock.recv(n - len(data))
-                except socket.timeout:
-                    if not data:
-                        raise  # 完全没读到，让上层返回哨兵
-                    # 已读到部分数据，重置 timeout 继续读完
-                    continue
+                chunk = sock.recv(n - len(data))
                 if not chunk:
                     return None
                 data += chunk
             return data
-        try:
-            h = _exact(2)
-        except socket.timeout:
-            return b""  # 哨兵：完全无数据
+        h = _exact(2)
         if not h:
             return None
         h = _exact(2)
@@ -443,13 +432,10 @@ def main():
             log("connecting qq gateway", gateway)
             sock, ws_send, ws_recv = _ws_connect(gateway)
 
-            # 1) Hello (op=10) - 等待服务端首帧，跳过 timeout 哨兵
-            hello_raw = b""
-            while not hello_raw:
-                hello_raw = ws_recv()
-                if hello_raw is None:
-                    raise RuntimeError("gateway closed before hello")
-                # b"" 哨兵 = 临时超时，继续等
+            # 1) Hello (op=10)
+            hello_raw = ws_recv()
+            if not hello_raw:
+                raise RuntimeError("gateway closed before hello")
             hello = json.loads(hello_raw.decode())
             heartbeat_interval = (hello.get("d") or {}).get("heartbeat_interval", 30000)
             log("hello heartbeat_interval", heartbeat_interval)
@@ -479,9 +465,6 @@ def main():
                 raw = ws_recv()
                 if raw is None:
                     raise RuntimeError("gateway connection closed")
-                if raw == b"":
-                    # 哨兵：socket read timeout，临时无数据，继续等下一帧（非断连）
-                    continue
                 try:
                     payload = json.loads(raw.decode(errors="replace"))
                 except Exception as e:
