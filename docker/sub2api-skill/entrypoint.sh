@@ -95,22 +95,19 @@ case "${BACKEND}" in
     MAX_BACKOFF=300
     MIN_BACKOFF=10
 
-    launch_backend() {
-      name="$1"
-      script="$2"
-      python3 "$script" &
-      echo $!
-    }
-
     # 初始化两个后端
+    # 注意：不能用 PID=$(func) 命令替换启动——命令替换会阻塞到所有继承其 stdout
+    # 的子进程（含后台 &）退出。必须内联启动 + stdout 重定向，让 $! 立即返回。
     echo "[entrypoint] launching QQ backend..."
-    QQ_PID=$(launch_backend qq /app/sub2api_qq_bot.py)
+    python3 /app/sub2api_qq_bot.py &
+    QQ_PID=$!
     echo "[entrypoint] QQ backend pid: ${QQ_PID}"
     QQ_BACKOFF=${MIN_BACKOFF}
     QQ_START=$(date +%s)
 
     echo "[entrypoint] launching Telegram backend..."
-    TG_PID=$(launch_backend telegram /app/sub2api_telegram_bot.py)
+    python3 /app/sub2api_telegram_bot.py &
+    TG_PID=$!
     echo "[entrypoint] Telegram backend pid: ${TG_PID}"
     TG_BACKOFF=${MIN_BACKOFF}
     TG_START=$(date +%s)
@@ -131,7 +128,8 @@ case "${BACKEND}" in
         echo "[entrypoint] QQ backend exited after ${ran}s (was alive >=60s? $([ $ran -ge 60 ] && echo yes || echo no); restarting in ${QQ_BACKOFF}s)"
         sleep ${QQ_BACKOFF}
         echo "[entrypoint] relaunching QQ backend..."
-        QQ_PID=$(launch_backend qq /app/sub2api_qq_bot.py)
+        python3 /app/sub2api_qq_bot.py &
+        QQ_PID=$!
         QQ_START=$(date +%s)
         echo "[entrypoint] QQ backend pid: ${QQ_PID}"
         # 退避加倍（上限）
@@ -149,7 +147,8 @@ case "${BACKEND}" in
         echo "[entrypoint] Telegram backend exited after ${ran}s (was alive >=60s? $([ $ran -ge 60 ] && echo yes || echo no); restarting in ${TG_BACKOFF}s)"
         sleep ${TG_BACKOFF}
         echo "[entrypoint] relaunching Telegram backend..."
-        TG_PID=$(launch_backend telegram /app/sub2api_telegram_bot.py)
+        python3 /app/sub2api_telegram_bot.py &
+        TG_PID=$!
         TG_START=$(date +%s)
         echo "[entrypoint] Telegram backend pid: ${TG_PID}"
         # 退避加倍（上限）
