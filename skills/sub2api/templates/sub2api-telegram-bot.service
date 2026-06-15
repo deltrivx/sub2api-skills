@@ -1,0 +1,24 @@
+[Unit]
+Description=Sub2API Telegram operations bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# bot 脚本与 bot_core.py 必须同目录（telegram-bot.py 依赖 `import bot_core`）
+WorkingDirectory=/opt
+ExecStart=/usr/bin/python3 /opt/sub2api-telegram-bot.py
+# 环境变量（含 HTTP_PROXY/HTTPS_PROXY）从 env 文件加载；
+# telegram-bot.py 用 urllib.request，会自动读取 *_PROXY 环境变量
+EnvironmentFile=-/etc/sub2api-bot.env
+# 崩溃后自动重启；StartLimitIntervalSec=0 禁用 systemd 默认的
+# “连续失败 N 次后放弃”机制，避免抖动期间被永久放弃（与 docker 版 entrypoint 行为一致）
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+# 输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
