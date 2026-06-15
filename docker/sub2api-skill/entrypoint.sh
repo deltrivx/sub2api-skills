@@ -87,35 +87,78 @@ case "${BACKEND}" in
   qq|qqbot)
     exec python3 /app/sub2api_qq_bot.py
     ;;
-    both)
+  both)
     # 双后端模式：同时启动 QQ 和 Telegram 两个进程。
-    # 容错策略：任一进程退出不立即杀另一个 —— 让存活的后端继续服务。
-    # 容器只在两个进程都退出（或收到外部信号）时才退出。
+    # 容错 + 自愈策略：任一进程退出不杀另一个，且自动重启退出的后端。
+    # 重启采用指数退避（10s -> 20s -> 40s ... 上限 300s），避免网络抖动时疯狂重连。
+    # 成功运行超过 60s 后退避计数器重置为初始值。
+    MAX_BACKOFF=300
+    MIN_BACKOFF=10
+
+    launch_backend() {
+      name="$1"
+      script="$2"
+      python3 "$script" &
+      echo $!
+    }
+
+    # 初始化两个后端
     echo "[entrypoint] launching QQ backend..."
-    python3 /app/sub2api_qq_bot.py &
-    QQ_PID=$!
+    QQ_PID=$(launch_backend qq /app/sub2api_qq_bot.py)
     echo "[entrypoint] QQ backend pid: ${QQ_PID}"
+    QQ_BACKOFF=${MIN_BACKOFF}
+    QQ_START=$(date +%s)
 
     echo "[entrypoint] launching Telegram backend..."
-    python3 /app/sub2api_telegram_bot.py &
-    TG_PID=$!
+    TG_PID=$(launch_backend telegram /app/sub2api_telegram_bot.py)
     echo "[entrypoint] Telegram backend pid: ${TG_PID}"
+    TG_BACKOFF=${MIN_BACKOFF}
+    TG_START=$(date +%s)
 
     # 信号转发：收到 SIGTERM/SIGINT 时杀掉两个子进程
     trap 'echo "[entrypoint] received signal, stopping both backends"; kill ${QQ_PID} ${TG_PID} 2>/dev/null; exit 0' TERM INT
 
-    # 等待两个进程都退出。任一退出时只记录日志，不杀另一个。
+    # 主循环：监控两个进程，退出则自动重启（带退避）
     qq_alive=1
     tg_alive=1
     while [ $qq_alive -eq 1 ] || [ $tg_alive -eq 1 ]; do
       sleep 3
+      now=$(date +%s)
+
+      # 检查 QQ backend
       if [ $qq_alive -eq 1 ] && ! kill -0 ${QQ_PID} 2>/dev/null; then
-        echo "[entrypoint] QQ backend exited (telegram continues if alive)"
-        qq_alive=0
+        ran=$((now - QQ_START))
+        echo "[entrypoint] QQ backend exited after ${ran}s (was alive >=60s? $([ $ran -ge 60 ] && echo yes || echo no); restarting in ${QQ_BACKOFF}s)"
+        sleep ${QQ_BACKOFF}
+        echo "[entrypoint] relaunching QQ backend..."
+        QQ_PID=$(launch_backend qq /app/sub2api_qq_bot.py)
+        QQ_START=$(date +%s)
+        echo "[entrypoint] QQ backend pid: ${QQ_PID}"
+        # 退避加倍（上限）
+        QQ_BACKOFF=$((QQ_BACKOFF * 2))
+        [ $QQ_BACKOFF -gt $MAX_BACKOFF ] && QQ_BACKOFF=$MAX_BACKOFF
+      elif [ $qq_alive -eq 1 ] && [ $((now - QQ_START)) -ge 60 ]; then
+        # 稳定运行超过 60s，重置退避
+        QQ_BACKOFF=${MIN_BACKOFF}
+        QQ_START=$now
       fi
+
+      # 检查 Telegram backend
       if [ $tg_alive -eq 1 ] && ! kill -0 ${TG_PID} 2>/dev/null; then
-        echo "[entrypoint] Telegram backend exited (qq continues if alive)"
-        tg_alive=0
+        ran=$((now - TG_START))
+        echo "[entrypoint] Telegram backend exited after ${ran}s (was alive >=60s? $([ $ran -ge 60 ] && echo yes || echo no); restarting in ${TG_BACKOFF}s)"
+        sleep ${TG_BACKOFF}
+        echo "[entrypoint] relaunching Telegram backend..."
+        TG_PID=$(launch_backend telegram /app/sub2api_telegram_bot.py)
+        TG_START=$(date +%s)
+        echo "[entrypoint] Telegram backend pid: ${TG_PID}"
+        # 退避加倍（上限）
+        TG_BACKOFF=$((TG_BACKOFF * 2))
+        [ $TG_BACKOFF -gt $MAX_BACKOFF ] && TG_BACKOFF=$MAX_BACKOFF
+      elif [ $tg_alive -eq 1 ] && [ $((now - TG_START)) -ge 60 ]; then
+        # 稳定运行超过 60s，重置退避
+        TG_BACKOFF=${MIN_BACKOFF}
+        TG_START=$now
       fi
     done
     echo "[entrypoint] both backends exited, container will restart"
