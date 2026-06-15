@@ -168,14 +168,17 @@ QQ Bot 在 C2C 私聊和群聊场景下，回复优先使用 **Markdown 消息**
 - 默认 `schedulable=false`，确认无误后再按部署策略开启调度
 - 回复中只展示凭据字段名，不展示明文凭据
 
-## 六、系统级部署 Telegram Bot
+## 六、系统级部署 Bot（Telegram / QQ / both）
 
-系统级部署适合 Sub2API 以二进制、systemd 或其他主机服务方式运行的环境。
+系统级部署适合 Sub2API 以二进制、systemd 或其他主机服务方式运行的环境。三种后端（`telegram` / `qq` / `both`）均可系统级部署，崩溃后由 systemd 自动重启。
 
 1. 复制模板和环境变量示例：
 
 ```bash
+# telegram-bot.py / qq-bot.py 依赖 `import bot_core`，三者必须同目录
+sudo install -m 700 skills/sub2api/templates/bot_core.py /opt/bot_core.py
 sudo install -m 700 skills/sub2api/templates/telegram-bot.py /opt/sub2api-telegram-bot.py
+sudo install -m 700 skills/sub2api/templates/qq-bot.py /opt/sub2api-qq-bot.py
 sudo install -m 600 docker/sub2api-skill/sub2api-skill.env.example /etc/sub2api-bot.env
 ```
 
@@ -185,14 +188,21 @@ sudo install -m 600 docker/sub2api-skill/sub2api-skill.env.example /etc/sub2api-
 sudo editor /etc/sub2api-bot.env
 ```
 
-3. 创建 systemd 服务并启动：
+3. 安装 systemd 服务（模板随仓库提供，已含 `Restart=always` + `StartLimitIntervalSec=0`，崩溃后自动恢复且不会因抖动放弃）：
 
 ```bash
+sudo install -m 644 skills/sub2api/templates/sub2api-telegram-bot.service /etc/systemd/system/
+sudo install -m 644 skills/sub2api/templates/sub2api-qq-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now sub2api-telegram-bot
+# 按需启用后端：
+sudo systemctl enable --now sub2api-telegram-bot   # 仅 Telegram
+# sudo systemctl enable --now sub2api-qq-bot        # 仅 QQ
+# both 模式：两个 service 同时启用即可（各自独立重启，互不影响）
 ```
 
 系统级 `/update` 会调用 `SUB2API_UPDATER_SCRIPT` 指定的更新脚本；如果检测到已是最新版，会直接提示“已是最新版”。
+
+> 说明：系统级 `both` 模式 = 两个独立 systemd service 并行运行。任一进程崩溃由各自 service 的 `Restart=always` 自动恢复，另一个不受影响——这与 Docker 版 entrypoint 的双后端容错行为一致。
 
 ## 七、Docker sidecar 部署
 
