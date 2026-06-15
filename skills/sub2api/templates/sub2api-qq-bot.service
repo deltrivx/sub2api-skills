@@ -1,0 +1,23 @@
+[Unit]
+Description=Sub2API QQ operations bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# bot 脚本与 bot_core.py 必须同目录（qq-bot.py 依赖 `import bot_core`）
+WorkingDirectory=/opt
+ExecStart=/usr/bin/python3 /opt/sub2api-qq-bot.py
+# 环境变量从 env 文件加载
+EnvironmentFile=-/etc/sub2api-bot.env
+# 崩溃后自动重启；StartLimitIntervalSec=0 禁用 systemd 默认的
+# “连续失败 N 次后放弃”机制，避免抖动期间被永久放弃（与 docker 版 entrypoint 行为一致）
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+# 输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
